@@ -6,6 +6,8 @@
   var JOIN_KEY = 'mylampa_sync_join_id';
   var LOADED_KEY = 'mylampa_sync_loaded_id';
   var ENABLED_KEY = 'mylampa_sync_enabled';
+  var cabinetOpen = false;
+  var ignoreBackdropClickUntil = 0;
 
   function normalizeId(value) {
     value = String(value || '').toLowerCase().replace(/[^a-z0-9-]/g, '');
@@ -49,6 +51,43 @@
 
   function reloadSilently() {
     setTimeout(function () { window.location.reload(); }, 80);
+  }
+
+  function closeCabinetFromBackdrop(event) {
+    var controller = Lampa.Controller && Lampa.Controller.enabled ? Lampa.Controller.enabled() : null;
+    var content = document.querySelector('.settings__content');
+
+    if (event.type === 'click' && Date.now() < ignoreBackdropClickUntil) {
+      event.preventDefault();
+      event.stopImmediatePropagation();
+      return;
+    }
+
+    if (!cabinetOpen || !document.body.classList.contains('settings--open')) return;
+    if (!controller || controller.name !== 'settings_component') return;
+    if (content && content.contains(event.target)) return;
+
+    // On phones the built-in backdrop only performs one "Back" step.  A tap
+    // outside this cabinet should instead dismiss the settings panel entirely.
+    ignoreBackdropClickUntil = Date.now() + 500;
+    event.preventDefault();
+    event.stopImmediatePropagation();
+    Lampa.Controller.toContent();
+  }
+
+  function enableBackdropClose() {
+    if (window.mylampaAccountBackdropCloseBound) return;
+    window.mylampaAccountBackdropCloseBound = true;
+
+    document.addEventListener(window.PointerEvent ? 'pointerup' : 'touchend', closeCabinetFromBackdrop, true);
+    document.addEventListener('click', closeCabinetFromBackdrop, true);
+
+    Lampa.Settings.listener.follow('open', function (event) {
+      cabinetOpen = !!event && event.name === COMPONENT;
+    });
+    Lampa.Settings.listener.follow('close', function () {
+      cabinetOpen = false;
+    });
   }
 
   function removeLegacyFlatSync() {
@@ -188,6 +227,7 @@
 
     if (syncEnabled()) loadSync();
     addSettings();
+    enableBackdropClose();
     return true;
   }
 
