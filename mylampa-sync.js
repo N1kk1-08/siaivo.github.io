@@ -125,17 +125,10 @@
 
     Lampa.SettingsApi.addParam({
       component: COMPONENT,
-      param: { name: ID_KEY, type: 'input', values: '', default: currentId() },
+      param: { name: 'mylampa_sync_id_display', type: 'static' },
       field: {
-        name: 'Ваш ID для синхронізації',
+        name: 'Ваш ID для синхронізації<br><span style="display:inline-block;margin-top:.28em;font-family:monospace;letter-spacing:.08em;color:#71dfff">' + currentId() + '</span>',
         description: 'Щоб синхронізувати дані між пристроями, введіть цей ID на іншому вашому пристрої.'
-      },
-      onChange: function (value) {
-        var id = normalizeId(value);
-        if (id && id !== currentId()) {
-          Lampa.Storage.set(ID_KEY, id);
-          Lampa.Noty.show('ID змінено. Перезапустіть Lampa для синхронізації.');
-        }
       }
     });
 
@@ -156,10 +149,10 @@
 
     Lampa.SettingsApi.addParam({
       component: COMPONENT,
-      param: { name: 'mylampa_sync_join_apply', type: 'trigger', default: false },
+      param: { name: 'mylampa_sync_join_apply', type: 'button' },
       field: {
         name: 'Підключити синхронізацію',
-        description: 'Після підтвердження Lampa автоматично перезапуститься.'
+        description: 'Після підключення Lampa автоматично перезапуститься.'
       },
       onChange: applyJoinedId
     });
