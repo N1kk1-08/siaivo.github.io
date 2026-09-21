@@ -67,12 +67,12 @@
     if (!controller || controller.name !== 'settings_component') return;
     if (content && content.contains(event.target)) return;
 
-    // On phones the built-in backdrop only performs one "Back" step.  A tap
-    // outside this cabinet should instead dismiss the settings panel entirely.
+    // The stock click handler is unreliable on some mobile browsers.  Preserve
+    // Lampa's usual navigation: one tap outside equals one "Back" step.
     ignoreBackdropClickUntil = Date.now() + 500;
     event.preventDefault();
     event.stopImmediatePropagation();
-    Lampa.Controller.toContent();
+    Lampa.Controller.back();
   }
 
   function enableBackdropClose() {
