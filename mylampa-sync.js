@@ -8,22 +8,23 @@
 
   function normalizeId(value) {
     value = String(value || '').toLowerCase().replace(/[^a-z0-9-]/g, '');
-    return value.length >= 12 && value.length <= 96 ? value : '';
+    return value.length >= 6 && value.length <= 32 ? value : '';
   }
 
   function makeId() {
-    var values = [];
+    var alphabet = 'abcdefghjkmnpqrstuvwxyz23456789';
+    var values = '';
     var i;
 
     if (window.crypto && window.crypto.getRandomValues) {
-      var bytes = new Uint32Array(4);
+      var bytes = new Uint8Array(6);
       window.crypto.getRandomValues(bytes);
-      for (i = 0; i < bytes.length; i++) values.push(bytes[i].toString(36));
+      for (i = 0; i < bytes.length; i++) values += alphabet.charAt(bytes[i] & 31);
     } else {
-      for (i = 0; i < 4; i++) values.push(Math.floor(Math.random() * 0xFFFFFFFF).toString(36));
+      for (i = 0; i < 6; i++) values += alphabet.charAt(Math.floor(Math.random() * alphabet.length));
     }
 
-    return 'ml-' + values.join('-');
+    return values;
   }
 
   function currentId() {
@@ -82,6 +83,13 @@
     setTimeout(function () { window.location.reload(); }, 700);
   }
 
+  function regenerateId() {
+    Lampa.Storage.set(ID_KEY, makeId());
+    Lampa.Storage.set(JOIN_KEY, '');
+    Lampa.Noty.show('Створено новий короткий ID. Lampa перезапускається…');
+    setTimeout(function () { window.location.reload(); }, 700);
+  }
+
   function addSettings() {
     if (window.mylampaAccountSettingsAdded) return;
     window.mylampaAccountSettingsAdded = true;
@@ -89,6 +97,7 @@
     Lampa.SettingsApi.addComponent({
       component: COMPONENT,
       name: 'Кабінет користувача',
+      before: 'account',
       icon: '<svg width="32" height="32" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="12" cy="8" r="3.3" stroke="currentColor" stroke-width="1.8"/><path d="M5.5 20c.7-4 3-5.9 6.5-5.9s5.8 1.9 6.5 5.9" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><rect x="2.2" y="2.2" width="19.6" height="19.6" rx="3.2" stroke="currentColor" stroke-width="1.5"/></svg>'
     });
 
@@ -106,6 +115,16 @@
           Lampa.Noty.show('ID змінено. Перезапустіть Lampa для синхронізації.');
         }
       }
+    });
+
+    Lampa.SettingsApi.addParam({
+      component: COMPONENT,
+      param: { name: 'mylampa_sync_regenerate', type: 'trigger', default: false },
+      field: {
+        name: 'Створити новий короткий ID',
+        description: 'Створює новий ID і перезапускає Lampa. Підключені раніше пристрої треба буде підключити знову.'
+      },
+      onChange: regenerateId
     });
 
     Lampa.SettingsApi.addParam({
