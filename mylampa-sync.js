@@ -147,6 +147,17 @@
 
       return result;
     };
+
+    // A successful /storage/get can legitimately contain no newer data.  It is
+    // still a completed synchronization check and deserves an updated status.
+    if (Lampa.Listener && typeof Lampa.Listener.follow === 'function') {
+      Lampa.Listener.follow('request_secuses', function (event) {
+        var url = event && event.params && event.params.url ? String(event.params.url) : '';
+        var storageGet = serverUrl() + '/storage/get';
+
+        if (url.split('?')[0] === storageGet && event.data && event.data.success) markSynced();
+      });
+    }
   }
 
   function removeLegacyFlatSync() {
