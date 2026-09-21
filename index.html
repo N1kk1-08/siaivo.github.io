@@ -108,13 +108,14 @@
             add(scripts)
         }
 
-        function loadMyLampaSplash() {
+        function loadMyLampaCustomizations() {
             putScript('mylampa-splash.js?v=' + cache_version, function () {})
+            putScript('mylampa-sync.js?v=' + cache_version, function () {})
         }
 
         function loadCurrentLampa() {
             putScript('app.min.js?v=' + cache_version, function () {
-                loadMyLampaSplash()
+                loadMyLampaCustomizations()
             })
         }
 
@@ -145,7 +146,7 @@
                     var css = urlJoin(lampa_url, 'css/app.css?v=' + cache_version)
 
                     $('head').append('<link rel="stylesheet" href="' + css + '">')
-                    loadMyLampaSplash()
+                    loadMyLampaCustomizations()
                 },
                 function () {
                     putScript(
@@ -155,7 +156,7 @@
 
                             $('head').append('<link rel="stylesheet" href="' + css + '">')
 
-                            loadMyLampaSplash()
+                            loadMyLampaCustomizations()
 
                             putScript(
                                 urlJoin(lampa_url, 'lampainit.js?v=' + cache_version),
