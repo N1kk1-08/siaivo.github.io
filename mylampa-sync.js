@@ -90,6 +90,28 @@
     setTimeout(function () { window.location.reload(); }, 700);
   }
 
+  function confirmRegenerateId() {
+    Lampa.Modal.open({
+      title: 'Створити новий ID?',
+      html: $('<div class="about"><div>Поточний ID перестане синхронізувати дані. На інших пристроях потрібно буде ввести новий ID.</div></div>'),
+      size: 'small',
+      buttons: [
+        {
+          name: 'Створити новий ID',
+          onSelect: function () {
+            Lampa.Modal.close();
+            regenerateId();
+          }
+        },
+        {
+          name: 'Скасувати',
+          onSelect: function () { Lampa.Modal.close(); }
+        }
+      ],
+      onBack: function () { Lampa.Modal.close(); }
+    });
+  }
+
   function addSettings() {
     if (window.mylampaAccountSettingsAdded) return;
     window.mylampaAccountSettingsAdded = true;
@@ -119,16 +141,6 @@
 
     Lampa.SettingsApi.addParam({
       component: COMPONENT,
-      param: { name: 'mylampa_sync_regenerate', type: 'trigger', default: false },
-      field: {
-        name: 'Створити новий короткий ID',
-        description: 'Створює новий ID і перезапускає Lampa. Підключені раніше пристрої треба буде підключити знову.'
-      },
-      onChange: regenerateId
-    });
-
-    Lampa.SettingsApi.addParam({
-      component: COMPONENT,
       param: {
         name: JOIN_KEY,
         type: 'input',
@@ -150,6 +162,16 @@
         description: 'Після підтвердження Lampa автоматично перезапуститься.'
       },
       onChange: applyJoinedId
+    });
+
+    Lampa.SettingsApi.addParam({
+      component: COMPONENT,
+      param: { name: 'mylampa_sync_regenerate', type: 'button' },
+      field: {
+        name: 'Створити новий короткий ID',
+        description: 'Скидає поточний ID. Підключені пристрої потрібно буде підключити знову.'
+      },
+      onChange: confirmRegenerateId
     });
   }
 
