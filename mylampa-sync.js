@@ -5,6 +5,7 @@
   var ID_KEY = 'mylampa_sync_id';
   var JOIN_KEY = 'mylampa_sync_join_id';
   var LOADED_KEY = 'mylampa_sync_loaded_id';
+  var ENABLED_KEY = 'mylampa_sync_enabled';
 
   function normalizeId(value) {
     value = String(value || '').toLowerCase().replace(/[^a-z0-9-]/g, '');
@@ -42,6 +43,14 @@
     return window.location.protocol + '//' + window.location.host;
   }
 
+  function syncEnabled() {
+    return String(Lampa.Storage.get(ENABLED_KEY, 'true')) === 'true';
+  }
+
+  function reloadSilently() {
+    setTimeout(function () { window.location.reload(); }, 80);
+  }
+
   function removeLegacyFlatSync() {
     if (!Lampa.Plugins || typeof Lampa.Plugins.get !== 'function' || typeof Lampa.Plugins.remove !== 'function') return false;
 
@@ -72,22 +81,21 @@
   function applyJoinedId() {
     var id = normalizeId(Lampa.Storage.get(JOIN_KEY, ''));
 
-    if (!id) {
-      Lampa.Noty.show('Введіть коректний ID користувача');
-      return;
-    }
+    // The input can be opened and closed without entering anything.  In that
+    // case leave the cabinet untouched instead of showing a distracting toast.
+    if (!id) return;
 
     Lampa.Storage.set(ID_KEY, id);
     Lampa.Storage.set(JOIN_KEY, '');
-    Lampa.Noty.show('ID підключено. Lampa перезапускається…');
-    setTimeout(function () { window.location.reload(); }, 700);
+    Lampa.Storage.set(ENABLED_KEY, true);
+    reloadSilently();
   }
 
   function regenerateId() {
     Lampa.Storage.set(ID_KEY, makeId());
     Lampa.Storage.set(JOIN_KEY, '');
-    Lampa.Noty.show('Створено новий короткий ID. Lampa перезапускається…');
-    setTimeout(function () { window.location.reload(); }, 700);
+    Lampa.Storage.set(ENABLED_KEY, true);
+    reloadSilently();
   }
 
   function confirmRegenerateId() {
@@ -144,17 +152,18 @@
       field: {
         name: 'Підключити інший пристрій',
         description: 'Введіть ID, показаний на вашому телевізорі або телефоні.'
-      }
+      },
+      onChange: applyJoinedId
     });
 
     Lampa.SettingsApi.addParam({
       component: COMPONENT,
-      param: { name: 'mylampa_sync_join_apply', type: 'button' },
+      param: { name: ENABLED_KEY, type: 'trigger', default: true },
       field: {
-        name: 'Підключити синхронізацію',
-        description: 'Після підключення Lampa автоматично перезапуститься.'
+        name: 'Синхронізація між пристроями',
+        description: 'Увімкніть, щоб синхронізувати закладки та час перегляду між підключеними пристроями.'
       },
-      onChange: applyJoinedId
+      onChange: reloadSilently
     });
 
     Lampa.SettingsApi.addParam({
@@ -177,7 +186,7 @@
       return true;
     }
 
-    loadSync();
+    if (syncEnabled()) loadSync();
     addSettings();
     return true;
   }
