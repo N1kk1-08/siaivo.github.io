@@ -6,8 +6,10 @@
   var JOIN_KEY = 'mylampa_sync_join_id';
   var LOADED_KEY = 'mylampa_sync_loaded_id';
   var ENABLED_KEY = 'mylampa_sync_enabled';
+  var LAST_SYNC_KEY = 'mylampa_last_sync_at';
   var cabinetOpen = false;
   var ignoreBackdropClickUntil = 0;
+  var timelineRefreshTimer = 0;
 
   function normalizeId(value) {
     value = String(value || '').toLowerCase().replace(/[^a-z0-9-]/g, '');
@@ -49,6 +51,33 @@
     return String(Lampa.Storage.get(ENABLED_KEY, 'true')) === 'true';
   }
 
+  function lastSyncText() {
+    var timestamp = Number(Lampa.Storage.get(LAST_SYNC_KEY, 0));
+    var date;
+
+    if (!timestamp) return 'Ще не синхронізовано';
+    date = new Date(timestamp);
+    if (isNaN(date.getTime())) return 'Ще не синхронізовано';
+
+    try {
+      return date.toLocaleString('uk-UA', {
+        day: '2-digit', month: '2-digit', year: 'numeric',
+        hour: '2-digit', minute: '2-digit'
+      });
+    } catch (error) {
+      return date.toLocaleString();
+    }
+  }
+
+  function showLastSync() {
+    $('.mylampa-sync-last').text(lastSyncText());
+  }
+
+  function markSynced() {
+    Lampa.Storage.set(LAST_SYNC_KEY, Date.now(), true);
+    showLastSync();
+  }
+
   function reloadSilently() {
     setTimeout(function () { window.location.reload(); }, 80);
   }
@@ -88,6 +117,36 @@
     Lampa.Settings.listener.follow('close', function () {
       cabinetOpen = false;
     });
+  }
+
+  function refreshTimelineAfterSyncImport() {
+    clearTimeout(timelineRefreshTimer);
+    timelineRefreshTimer = setTimeout(function () {
+      if (Lampa.Timeline && typeof Lampa.Timeline.read === 'function') Lampa.Timeline.read();
+    }, 0);
+  }
+
+  function watchSyncTimecodes() {
+    if (window.mylampaSyncTimecodeWatchBound) return;
+    if (!Lampa.Storage || typeof Lampa.Storage.set !== 'function') return;
+
+    window.mylampaSyncTimecodeWatchBound = true;
+    var originalSet = Lampa.Storage.set;
+
+    Lampa.Storage.set = function (name, value, nolisten) {
+      var result = originalSet.apply(Lampa.Storage, arguments);
+
+      // sync.js writes this marker only after a successful import or export.
+      if (name === 'lampac_sync_favorite' || name === 'lampac_sync_view') markSynced();
+
+      // The server Sync plugin imports file_view with nolisten=true.  Lampa's
+      // Timeline has already read its in-memory copy by then, so refresh it.
+      if (nolisten && (name === 'file_view' || String(name).indexOf('file_view_') === 0)) {
+        refreshTimelineAfterSyncImport();
+      }
+
+      return result;
+    };
   }
 
   function removeLegacyFlatSync() {
@@ -172,6 +231,15 @@
 
     Lampa.SettingsApi.addParam({
       component: COMPONENT,
+      param: { name: 'mylampa_sync_last_status', type: 'static' },
+      field: {
+        name: 'Синхронізовано станом на<br><span class="mylampa-sync-last" style="display:inline-block;margin-top:.28em;color:#71dfff">' + lastSyncText() + '</span>'
+      },
+      onRender: showLastSync
+    });
+
+    Lampa.SettingsApi.addParam({
+      component: COMPONENT,
       param: { name: 'mylampa_sync_id_display', type: 'static' },
       field: {
         name: 'Ваш ID для синхронізації<br><span style="display:inline-block;margin-top:.28em;font-family:monospace;letter-spacing:.08em;color:#71dfff">' + currentId() + '</span>',
@@ -225,6 +293,7 @@
       return true;
     }
 
+    watchSyncTimecodes();
     if (syncEnabled()) loadSync();
     addSettings();
     enableBackdropClose();
