@@ -6,7 +6,7 @@
   // listed providers in the background without changing normal playback flow.
   // Bump the storage key when the availability rules change so old optimistic
   // answers cannot be shown as if they were freshly verified.
-  var CACHE_KEY = 'mylampa_balanser_availability_v2';
+  var CACHE_KEY = 'mylampa_balanser_availability_v3';
   var SUCCESS_CACHE_TTL = 60 * 60 * 1000;
   var FAILURE_CACHE_TTL = 3 * 60 * 1000;
   var MAX_PARALLEL_REQUESTS = 2;
@@ -18,6 +18,7 @@
     available: 'Є в наявності',
     matches: 'Є схожі варіанти',
     missing: 'Не знайдено',
+    requires_access: 'Потрібна перевірка',
     unavailable: 'Недоступне'
   };
 
@@ -26,6 +27,7 @@
     available: '#61df94',
     matches: '#ffd56a',
     missing: '#8992a0',
+    requires_access: '#ffd56a',
     unavailable: '#ff8799'
   };
 
@@ -95,13 +97,25 @@
     return url + (url.indexOf('?') >= 0 ? '&' : '?') + query;
   }
 
+  function probeUrl(url) {
+    return appendQuery(url, 'mylampa_probe=1');
+  }
+
+  function isProbeUrl(url) {
+    return /(?:[?&])mylampa_probe=1(?:&|$)/.test(String(url || ''));
+  }
+
+  function requestPath(url) {
+    return String(url || '').split('?')[0].replace(/\/$/, '');
+  }
+
   function cacheEntryKey(session, source) {
     return session.movie + '|' + sourceKey(source);
   }
 
   function cacheIsFresh(entry) {
     if (!entry || !entry.at || !entry.status) return false;
-    var ttl = entry.status === 'unavailable' ? FAILURE_CACHE_TTL : SUCCESS_CACHE_TTL;
+    var ttl = entry.status === 'unavailable' || entry.status === 'requires_access' ? FAILURE_CACHE_TTL : SUCCESS_CACHE_TTL;
     return Date.now() - entry.at < ttl;
   }
 
@@ -124,7 +138,12 @@
   }
 
   function inspectResponse(data) {
-    if (data && typeof data === 'object' && (data.rch || data.accsdb)) return { status: 'unavailable' };
+    var decoded = typeof data === 'string' ? safeJson(data) : data;
+
+    // rch is a normal Lampac access handshake. The regular online.js can
+    // complete it, while a passive probe intentionally cannot.
+    if (decoded && typeof decoded === 'object' && decoded.rch) return { status: 'requires_access' };
+    if (decoded && typeof decoded === 'object' && decoded.accsdb) return { status: 'unavailable' };
 
     var text = typeof data === 'string' ? data : data ? JSON.stringify(data) : '';
     if (!text || !text.trim()) return { status: 'missing' };
@@ -238,13 +257,39 @@
       }
 
       visited[url] = true;
-      requestText(url, function (result) {
+      requestText(probeUrl(url), function (result) {
         if (result.status === 'continue') follow(result.url, depth + 1);
         else done(result.status);
       });
     }
 
     follow(appendQuery(source.url, session.query), 0);
+  }
+
+  function sourceForRequest(session, url) {
+    var path = requestPath(url);
+    var found = null;
+
+    session.sources.some(function (source) {
+      if (requestPath(source.url) !== path) return false;
+      found = source;
+      return true;
+    });
+
+    return found;
+  }
+
+  function applyObservedStatus(session, source, response) {
+    if (!session || !source) return;
+    var result = inspectResponse(response);
+
+    // Intermediate pages are followed by online.js itself. Do not replace a
+    // useful existing status until the normal player request has a conclusion.
+    if (result.status === 'continue' || result.status === 'requires_access' || result.status === 'unavailable') return;
+
+    session.statuses[sourceKey(source)] = result.status;
+    cacheStatus(session, source, result.status);
+    render(session);
   }
 
   function runQueue(session, queue) {
@@ -318,10 +363,17 @@
 
     Lampa.Listener.follow('request_secuses', function (event) {
       var url = event && event.params && event.params.url ? String(event.params.url) : '';
-      if (!isDiscoveryRequest(url)) return;
+      if (isDiscoveryRequest(url)) {
+        var sources = extractSources(event.data);
+        if (sources.length) startChecks(url, sources);
+        return;
+      }
 
-      var sources = extractSources(event.data);
-      if (sources.length) startChecks(url, sources);
+      // This is the request made by normal online.js after the user selects a
+      // source. It knows how to complete rch, so its successful answer is the
+      // authoritative result for the selected balancer.
+      if (!activeSession || isProbeUrl(url)) return;
+      applyObservedStatus(activeSession, sourceForRequest(activeSession, url), event.data);
     });
 
     return true;
