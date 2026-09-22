@@ -4,7 +4,9 @@
   // This script deliberately stays separate from Lampac's generated online.js.
   // It observes the source list that online.js already receives, then checks the
   // listed providers in the background without changing normal playback flow.
-  var CACHE_KEY = 'mylampa_balanser_availability_v1';
+  // Bump the storage key when the availability rules change so old optimistic
+  // answers cannot be shown as if they were freshly verified.
+  var CACHE_KEY = 'mylampa_balanser_availability_v2';
   var SUCCESS_CACHE_TTL = 60 * 60 * 1000;
   var FAILURE_CACHE_TTL = 3 * 60 * 1000;
   var MAX_PARALLEL_REQUESTS = 2;
@@ -121,30 +123,35 @@
     try { return JSON.parse(value); } catch (error) { return null; }
   }
 
-  function classifyResponse(data) {
-    if (data && typeof data === 'object' && (data.rch || data.accsdb)) return 'unavailable';
+  function inspectResponse(data) {
+    if (data && typeof data === 'object' && (data.rch || data.accsdb)) return { status: 'unavailable' };
 
     var text = typeof data === 'string' ? data : data ? JSON.stringify(data) : '';
-    if (!text || !text.trim()) return 'missing';
+    if (!text || !text.trim()) return { status: 'missing' };
 
     var root = document.createElement('div');
     root.innerHTML = text;
-    var items = root.querySelectorAll('.videos__item, .videos__button');
+    var items = root.querySelectorAll('.videos__item');
     var hasVideo = false;
     var hasSimilar = false;
+    var nextUrl = '';
 
     for (var i = 0; i < items.length; i++) {
       var item = safeJson(items[i].getAttribute('data-json') || '');
       if (!item) continue;
       if (item.similar) hasSimilar = true;
-      else if (item.method === 'play' || item.method === 'call' || item.method === 'link' || items[i].classList.contains('videos__button')) hasVideo = true;
+      else if (item.method === 'play' || item.method === 'call') hasVideo = true;
+      else if (!nextUrl && item.method === 'link' && item.url) nextUrl = item.url;
     }
 
-    if (hasVideo) return 'available';
-    if (hasSimilar) return 'matches';
+    // A link usually means a season, translation, or another intermediate
+    // screen. It is not proof that the title itself has episodes yet.
+    if (hasVideo) return { status: 'available' };
+    if (nextUrl) return { status: 'continue', url: nextUrl };
+    if (hasSimilar) return { status: 'matches' };
 
-    if (/(не найден|не знайден|not found|no results|поиск не дал результатов|нічого не знайдено)/i.test(text)) return 'missing';
-    return 'unavailable';
+    if (/(не найден|не знайден|not found|no results|поиск не дал результатов|нічого не знайдено)/i.test(text)) return { status: 'missing' };
+    return { status: 'unavailable' };
   }
 
   function selectSourceKey(item) {
@@ -208,16 +215,36 @@
     writeCache(cache);
   }
 
-  function requestSource(session, source, done) {
+  function requestText(url, done) {
     var request = new Lampa.Reguest();
     request.timeout(9000);
     request.native(
-      appendQuery(source.url, session.query),
-      function (data) { done(classifyResponse(data)); },
-      function () { done('unavailable'); },
+      url,
+      function (data) { done(inspectResponse(data)); },
+      function () { done({ status: 'unavailable' }); },
       false,
       { dataType: 'text' }
     );
+  }
+
+  function requestSource(session, source, done) {
+    var visited = {};
+    var maxDepth = 2;
+
+    function follow(url, depth) {
+      if (!url || depth > maxDepth || visited[url]) {
+        done('unavailable');
+        return;
+      }
+
+      visited[url] = true;
+      requestText(url, function (result) {
+        if (result.status === 'continue') follow(result.url, depth + 1);
+        else done(result.status);
+      });
+    }
+
+    follow(appendQuery(source.url, session.query), 0);
   }
 
   function runQueue(session, queue) {
