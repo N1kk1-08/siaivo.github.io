@@ -8,7 +8,6 @@
   var SUCCESS_CACHE_TTL = 60 * 60 * 1000;
   var FAILURE_CACHE_TTL = 3 * 60 * 1000;
   var MAX_PARALLEL_REQUESTS = 2;
-  var PANEL_ID = 'mylampa-balanser-availability';
   var initialized = false;
   var activeSession = null;
 
@@ -148,39 +147,59 @@
     return 'unavailable';
   }
 
-  function panel() {
-    var current = $('#' + PANEL_ID);
-    if (current.length) return current;
+  function selectSourceKey(item) {
+    return String(item && (item.source || item.balanser || item.name) || '').split(' ')[0].toLowerCase();
+  }
 
-    var sort = $('.filter--sort').first();
-    if (!sort.length) return $();
+  function isBalancerSelect(active, session) {
+    if (!active || !session || !Array.isArray(active.items) || !active.items.length) return false;
+    if (active.title !== Lampa.Lang.translate('filter_sorted')) return false;
 
-    current = $('<div id="' + PANEL_ID + '" style="display:block;max-width:38em;margin:.55em 0 0;font-size:.78em;line-height:1.35"></div>');
-    sort.after(current);
-    return current;
+    return active.items.some(function (item) {
+      return session.statuses.hasOwnProperty(selectSourceKey(item));
+    });
+  }
+
+  function selectItem(item, status) {
+    var row = $('<div class="selectbox-item selector" style="display:flex;align-items:center;justify-content:space-between;gap:1em"></div>');
+    var title = $('<div class="selectbox-item__title" style="min-width:0"></div>').text(item.title || '');
+    var label = $('<div class="mylampa-balanser-status" style="display:inline-flex;align-items:center;gap:.35em;flex:0 0 auto;font-size:.58em;white-space:nowrap"></div>');
+    var dot = $('<i style="display:inline-block;width:.62em;height:.62em;border-radius:50%"></i>');
+
+    dot.css('background', statusColors[status] || statusColors.checking);
+    label.append(dot);
+    label.append($('<span></span>').text(statusLabels[status] || statusLabels.checking));
+    row.attr('data-mylampa-balanser-key', selectSourceKey(item));
+    row.append(title);
+    row.append(label);
+    return row;
+  }
+
+  function decorateSelect(active, session) {
+    if (!isBalancerSelect(active, session)) return;
+
+    active.items.forEach(function (item) {
+      var key = selectSourceKey(item);
+      if (!session.statuses.hasOwnProperty(key)) return;
+      item.html = selectItem(item, session.statuses[key] || 'checking');
+    });
+  }
+
+  function refreshOpenSelect(session) {
+    if (!session || activeSession !== session) return;
+
+    $('[data-mylampa-balanser-key]').each(function () {
+      var key = String($(this).attr('data-mylampa-balanser-key') || '');
+      var status = session.statuses[key] || 'checking';
+      var label = $(this).find('.mylampa-balanser-status');
+
+      label.find('i').css('background', statusColors[status] || statusColors.checking);
+      label.find('span').text(statusLabels[status] || statusLabels.checking);
+    });
   }
 
   function render(session) {
-    if (!session || activeSession !== session) return;
-    var target = panel();
-    if (!target.length) {
-      setTimeout(function () { render(session); }, 350);
-      return;
-    }
-
-    target.empty();
-    target.append($('<div style="margin:0 0 .28em;color:#b8c2d4">Доступність джерел</div>'));
-
-    var chips = $('<div style="display:flex;flex-wrap:wrap;gap:.32em"></div>');
-    session.sources.forEach(function (source) {
-      var status = session.statuses[sourceKey(source)] || 'checking';
-      var chip = $('<span style="display:inline-flex;align-items:center;gap:.32em;padding:.22em .48em;border-radius:.42em;background:rgba(255,255,255,.07);white-space:normal"></span>');
-      chip.append($('<i style="display:inline-block;width:.56em;height:.56em;border-radius:50%"></i>').css('background', statusColors[status] || statusColors.checking));
-      chip.append($('<span></span>').text(sourceLabel(source) + ' — ' + (statusLabels[status] || statusLabels.checking)));
-      chips.append(chip);
-    });
-
-    target.append(chips);
+    refreshOpenSelect(session);
   }
 
   function cacheStatus(session, source, status) {
@@ -263,9 +282,13 @@
 
   function init() {
     if (initialized) return true;
-    if (!window.Lampa || !Lampa.Listener || !Lampa.Reguest || !Lampa.Storage || !window.jQuery) return false;
+    if (!window.Lampa || !Lampa.Listener || !Lampa.Reguest || !Lampa.Storage || !Lampa.Select || !Lampa.Select.listener || !window.jQuery) return false;
 
     initialized = true;
+    Lampa.Select.listener.follow('preshow', function (event) {
+      decorateSelect(event && event.active, activeSession);
+    });
+
     Lampa.Listener.follow('request_secuses', function (event) {
       var url = event && event.params && event.params.url ? String(event.params.url) : '';
       if (!isDiscoveryRequest(url)) return;
