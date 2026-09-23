@@ -7,6 +7,10 @@
   var LOADED_KEY = 'mylampa_sync_loaded_id';
   var ENABLED_KEY = 'mylampa_sync_enabled';
   var LAST_SYNC_KEY = 'mylampa_last_sync_at';
+  var OFFLINE_BASE_PREFIX = 'mylampa_sync_offline_base_';
+  var TIMECODE_QUEUE_PREFIX = 'mylampa_sync_timecode_queue_';
+  var RECONCILED_KEY = 'mylampa_sync_reconciled_id';
+  var BOOKMARK_CATEGORIES = ['history', 'like', 'watch', 'wath', 'book', 'look', 'viewed', 'scheduled', 'continued', 'thrown'];
   var cabinetOpen = false;
   var ignoreBackdropClickUntil = 0;
   var timelineRefreshTimer = 0;
@@ -15,6 +19,10 @@
   var syncRetryTimer = 0;
   var syncRetryDelay = 2000;
   var syncLoadErrorShown = false;
+  var reconcileInFlight = false;
+  var reconcileTimer = 0;
+  var reconcileDelay = 2000;
+  var reconcileErrorShown = false;
 
   function normalizeId(value) {
     value = String(value || '').trim().toLowerCase();
@@ -72,6 +80,11 @@
     var timestamp = Number(Lampa.Storage.get(LAST_SYNC_KEY, 0));
     var date;
 
+    if (syncEnabled() && (reconcileInFlight || reconcileTimer ||
+        storageGet(OFFLINE_BASE_PREFIX + currentId()) ||
+        Object.keys(readJson(timecodeQueueKey(currentId()), {}) || {}).length)) {
+      return 'Офлайн-зміни очікують синхронізації';
+    }
     if (!timestamp) return 'Ще не синхронізовано';
     date = new Date(timestamp);
     if (isNaN(date.getTime())) return 'Ще не синхронізовано';
@@ -98,6 +111,328 @@
 
   function reloadSilently() {
     setTimeout(function () { window.location.reload(); }, 80);
+  }
+
+  function readJson(key, fallback) {
+    try {
+      var value = window.localStorage.getItem(key);
+      return value ? JSON.parse(value) : fallback;
+    } catch (error) {
+      return fallback;
+    }
+  }
+
+  function storageGet(key) {
+    try { return window.localStorage.getItem(key); }
+    catch (error) { return null; }
+  }
+
+  function writeJson(key, value) {
+    try {
+      window.localStorage.setItem(key, JSON.stringify(value));
+      return true;
+    } catch (error) {
+      Lampa.Noty.show('Не вдалося зберегти офлайн-зміни на цьому пристрої.');
+      return false;
+    }
+  }
+
+  function favoriteSnapshot() {
+    var value = Lampa.Storage.get('favorite', {});
+    try {
+      return value && typeof value === 'object' ? JSON.parse(JSON.stringify(value)) : {};
+    } catch (error) {
+      return {};
+    }
+  }
+
+  function cloneObject(value) {
+    try { return value && typeof value === 'object' ? JSON.parse(JSON.stringify(value)) : {}; }
+    catch (error) { return {}; }
+  }
+
+  function bookmarkMembershipSnapshot() {
+    var favorite = favoriteSnapshot();
+    var snapshot = {};
+    BOOKMARK_CATEGORIES.forEach(function (where) {
+      snapshot[where] = Array.isArray(favorite[where]) ? favorite[where].slice() : [];
+    });
+    return snapshot;
+  }
+
+  function rememberOfflineBase() {
+    var key = OFFLINE_BASE_PREFIX + currentId();
+    return !!storageGet(key) || writeJson(key, bookmarkMembershipSnapshot());
+  }
+
+  function timecodeQueueKey(id) {
+    return TIMECODE_QUEUE_PREFIX + id;
+  }
+
+  function queueTimecode(id, cardId, hash, road) {
+    var key = timecodeQueueKey(id);
+    var queue = readJson(key, {});
+    if (!queue || typeof queue !== 'object' || Array.isArray(queue)) queue = {};
+    queue[cardId + '|' + hash] = { cardId: cardId, hash: String(hash), road: cloneObject(road) };
+    return writeJson(key, queue);
+  }
+
+  function rememberOfflineTimecodes() {
+    if (window.mylampaSyncOfflineTimelineBound) return;
+    if (!Lampa.Timeline || !Lampa.Timeline.listener || !Lampa.Timeline.listener.follow) {
+      setTimeout(rememberOfflineTimecodes, 500);
+      return;
+    }
+
+    window.mylampaSyncOfflineTimelineBound = true;
+    Lampa.Timeline.listener.follow('update', function (event) {
+      if (syncEnabled() && !reconcileInFlight) return;
+      if (!event || !event.data || !event.data.road || !event.data.hash) return;
+
+      var activity = Lampa.Storage.get('activity', {});
+      var card = activity && (activity.movie || activity.card);
+      if (!card || !card.id) return;
+
+      var cardId = String(card.id) + '_' + (card.name ? 'tv' : 'movie');
+      queueTimecode(currentId(), cardId, event.data.hash, event.data.road);
+    });
+  }
+
+  function apiUrl(path, id, extra) {
+    var url = serverUrl() + path;
+    var params = {
+      token: id,
+      account_email: Lampa.Storage.get('account_email', ''),
+      uid: Lampa.Storage.get('lampac_unic_id', ''),
+      profile_id: Lampa.Storage.get('lampac_profile_id', ''),
+      connectionId: window.lwsEvent && window.lwsEvent.connectionId || ''
+    };
+    var name;
+    if (extra) for (name in extra) if (Object.prototype.hasOwnProperty.call(extra, name)) params[name] = extra[name];
+    for (name in params) {
+      if (Object.prototype.hasOwnProperty.call(params, name) && params[name] !== '' && params[name] !== null && typeof params[name] !== 'undefined') {
+        url = Lampa.Utils.addUrlComponent(url, encodeURIComponent(name) + '=' + encodeURIComponent(params[name]));
+      }
+    }
+    return url;
+  }
+
+  function apiRequest(method, url, body, contentType, callback) {
+    var request = new XMLHttpRequest();
+    var finished = false;
+    function finish(error, data) {
+      if (finished) return;
+      finished = true;
+      callback(error, data);
+    }
+    try {
+      request.open(method, url, true);
+      request.timeout = 15000;
+      if (contentType) request.setRequestHeader('Content-Type', contentType);
+      request.onreadystatechange = function () {
+        if (request.readyState !== 4) return;
+        if (request.status < 200 || request.status >= 300) return finish('HTTP ' + request.status);
+        try { finish(null, JSON.parse(request.responseText)); }
+        catch (error) { finish('Некоректна відповідь сервера'); }
+      };
+      request.onerror = function () { finish('Немає з’єднання із сервером'); };
+      request.ontimeout = function () { finish('Сервер не відповідає'); };
+      request.send(body || null);
+    } catch (error) {
+      finish('Не вдалося виконати запит');
+    }
+  }
+
+  function getBookmarks(id, callback) {
+    apiRequest('GET', apiUrl('/bookmark/list', id), null, '', function (error, data) {
+      if (error) return callback(error);
+      if (!data || typeof data !== 'object' || Array.isArray(data)) return callback('Некоректний список закладок');
+      if (data.dbInNotInitialization === true) data = { card: [] };
+      if (!Array.isArray(data.card)) return callback('Некоректний список закладок');
+      callback(null, data);
+    });
+  }
+
+  function cardMap(favorite) {
+    var map = {};
+    var cards = favorite && Array.isArray(favorite.card) ? favorite.card : [];
+    cards.forEach(function (card) {
+      if (card && card.id !== null && typeof card.id !== 'undefined') map[String(card.id)] = card;
+    });
+    return map;
+  }
+
+  function idSet(items) {
+    var set = {};
+    if (Array.isArray(items)) items.forEach(function (item) { set[String(item)] = true; });
+    return set;
+  }
+
+  function bookmarkChanges(base, local, remote) {
+    var additions = [];
+    var removals = [];
+    var cards = cardMap(local);
+    var missingCard = false;
+
+    BOOKMARK_CATEGORIES.forEach(function (where) {
+      var before = base ? idSet(base[where]) : null;
+      var onServer = idSet(remote[where]);
+      var now = Array.isArray(local[where]) ? local[where] : [];
+      var current = idSet(now);
+
+      // The first run has no baseline: preserve local-only entries, but never
+      // infer deletions from an old snapshot.
+      now.slice().reverse().forEach(function (item) {
+        var id = String(item);
+        if ((before && before[id]) || onServer[id]) return;
+        var card = cards[id];
+        if (!card) { missingCard = true; return; }
+        additions.push({ where: where, card: card, card_id: id, id: id });
+      });
+
+      if (before) Object.keys(before).forEach(function (id) {
+        if (!current[id] && onServer[id]) removals.push({ where: where, method: 'category', card_id: id, id: id });
+      });
+    });
+
+    return missingCard ? null : { additions: additions, removals: removals };
+  }
+
+  function postBookmarks(id, path, payload, callback) {
+    if (!payload.length) return callback(null);
+    apiRequest('POST', apiUrl('/bookmark/' + path, id), JSON.stringify(payload), 'application/json;charset=UTF-8', function (error, data) {
+      callback(error || !data || data.success !== true ? error || 'Сервер не зберіг закладки' : null);
+    });
+  }
+
+  function postTimecodes(id, callback) {
+    var key = timecodeQueueKey(id);
+    var queue = readJson(key, {});
+    var names = queue && typeof queue === 'object' && !Array.isArray(queue) ? Object.keys(queue) : [];
+    var index = 0;
+    var serverCards = {};
+
+    function forget(name, entry, done) {
+      var latest = readJson(key, {});
+      if (latest && JSON.stringify(latest[name]) === JSON.stringify(entry)) {
+        delete latest[name];
+        if (!writeJson(key, latest)) return callback('Не вдалося оновити чергу офлайн-змін');
+      }
+      setTimeout(done, 250);
+    }
+
+    function sendEntry(name, entry, serverRoad) {
+      if (typeof serverRoad === 'string') {
+        try { serverRoad = JSON.parse(serverRoad); }
+        catch (parseError) { return callback('Некоректний час перегляду на сервері'); }
+      }
+      var localUpdated = Number(entry.road.updated) || 0;
+      var serverUpdated = Number(serverRoad && serverRoad.updated) || 0;
+      var serverIsNewer = serverUpdated > localUpdated ||
+        (!serverUpdated && !localUpdated && Number(serverRoad && serverRoad.percent) >= Number(entry.road.percent));
+      if (serverRoad && serverIsNewer) return forget(name, entry, next);
+
+      var url = apiUrl('/timecode/add', id, { card_id: entry.cardId });
+      var body = 'id=' + encodeURIComponent(entry.hash) + '&data=' + encodeURIComponent(JSON.stringify(entry.road));
+      apiRequest('POST', url, body, 'application/x-www-form-urlencoded;charset=UTF-8', function (error, data) {
+        if (error || !data || data.success !== true) return callback(error || 'Сервер не зберіг час перегляду');
+        forget(name, entry, next);
+      });
+    }
+
+    function next() {
+      if (index >= names.length) return callback(null);
+      var name = names[index++];
+      var entry = queue[name];
+      if (!entry || !entry.cardId || !entry.hash || !entry.road) return callback('Некоректна черга часу перегляду');
+      if (Object.prototype.hasOwnProperty.call(serverCards, entry.cardId)) {
+        return sendEntry(name, entry, serverCards[entry.cardId][entry.hash]);
+      }
+
+      apiRequest('GET', apiUrl('/timecode/all', id, { card_id: entry.cardId }), null, '', function (error, data) {
+        if (error || !data || typeof data !== 'object' || Array.isArray(data)) return callback(error || 'Сервер не віддав час перегляду');
+        serverCards[entry.cardId] = data;
+        sendEntry(name, entry, data[entry.hash]);
+      });
+    }
+    next();
+  }
+
+  function retryReconcile(message) {
+    reconcileInFlight = false;
+    if (!syncEnabled()) return;
+    if (!reconcileErrorShown) Lampa.Noty.show(message + ' Повторюємо спробу…');
+    reconcileErrorShown = true;
+    clearTimeout(reconcileTimer);
+    reconcileTimer = setTimeout(function () {
+      reconcileTimer = 0;
+      reconcileBeforeLoad();
+    }, reconcileDelay);
+    reconcileDelay = Math.min(reconcileDelay * 2, 60000);
+    showLastSync();
+  }
+
+  function reconcileBeforeLoad() {
+    var id = currentId();
+    var base = readJson(OFFLINE_BASE_PREFIX + id, null);
+    var queue = readJson(timecodeQueueKey(id), {});
+    var local = favoriteSnapshot();
+    var localJson = JSON.stringify(local);
+    var hasLocalBookmarks = BOOKMARK_CATEGORIES.some(function (where) { return Array.isArray(local[where]) && local[where].length; });
+    var hasTimecodes = queue && typeof queue === 'object' && Object.keys(queue).length;
+
+    if (reconcileInFlight || !syncEnabled()) return;
+    if (!base && !hasTimecodes && (storageGet(RECONCILED_KEY) === id || !hasLocalBookmarks)) {
+      loadSync();
+      return;
+    }
+    if (!serverUrl()) return retryReconcile('Не вдалося визначити сервер синхронізації.');
+
+    reconcileInFlight = true;
+    showLastSync();
+    getBookmarks(id, function (error, remote) {
+      if (!syncEnabled() || currentId() !== id) { reconcileInFlight = false; return; }
+      if (error) return retryReconcile(error);
+      var changes = bookmarkChanges(base, local, remote);
+      if (!changes) return retryReconcile('У локальній історії бракує даних картки.');
+
+      postBookmarks(id, 'remove', changes.removals, function (removeError) {
+        if (!syncEnabled() || currentId() !== id) { reconcileInFlight = false; return; }
+        if (removeError) return retryReconcile(removeError);
+        postBookmarks(id, 'add', changes.additions, function (addError) {
+          if (!syncEnabled() || currentId() !== id) { reconcileInFlight = false; return; }
+          if (addError) return retryReconcile(addError);
+          postTimecodes(id, function (timecodeError) {
+            if (!syncEnabled() || currentId() !== id) { reconcileInFlight = false; return; }
+            if (timecodeError) return retryReconcile(timecodeError);
+            getBookmarks(id, function (verifyError, result) {
+              if (!syncEnabled() || currentId() !== id) { reconcileInFlight = false; return; }
+              if (verifyError) return retryReconcile(verifyError);
+              var complete = changes.additions.every(function (item) { return !!idSet(result[item.where])[item.id]; }) &&
+                changes.removals.every(function (item) { return !idSet(result[item.where])[item.id]; });
+              if (!complete) return retryReconcile('Сервер ще не підтвердив офлайн-зміни.');
+              var pendingTimecodes = readJson(timecodeQueueKey(id), {});
+              if (JSON.stringify(favoriteSnapshot()) !== localJson ||
+                  (pendingTimecodes && typeof pendingTimecodes === 'object' && Object.keys(pendingTimecodes).length)) {
+                reconcileInFlight = false;
+                return reconcileBeforeLoad();
+              }
+              try {
+                window.localStorage.setItem(RECONCILED_KEY, id);
+                window.localStorage.removeItem(OFFLINE_BASE_PREFIX + id);
+              } catch (storageError) {
+                return retryReconcile('Не вдалося завершити збереження офлайн-змін.');
+              }
+              reconcileInFlight = false;
+              reconcileDelay = 2000;
+              reconcileErrorShown = false;
+              showLastSync();
+              loadSync();
+            });
+          });
+        });
+      });
+    });
   }
 
   function closeCabinetFromBackdrop(event) {
@@ -150,17 +485,60 @@
 
     window.mylampaSyncTimecodeWatchBound = true;
     var originalSet = Lampa.Storage.set;
+    var localTimecodes = {};
+
+    function isTimecodeName(name) {
+      return name === 'file_view' || String(name).indexOf('file_view_') === 0;
+    }
+
+    function rememberTimecodes(name) {
+      localTimecodes[name] = cloneObject(Lampa.Storage.get(name, {}));
+    }
+
+    rememberTimecodes('file_view');
+    try {
+      for (var i = 0; i < window.localStorage.length; i++) {
+        var key = window.localStorage.key(i);
+        if (isTimecodeName(key)) rememberTimecodes(key);
+      }
+    } catch (error) {}
 
     Lampa.Storage.set = function (name, value, nolisten) {
+      if (isTimecodeName(name) && nolisten && value && typeof value === 'object') {
+        var previous = localTimecodes[name] || {};
+        var activity = Lampa.Storage.get('activity', {});
+        var card = activity && (activity.movie || activity.card);
+        var cardId = card && card.id ? String(card.id) + '_' + (card.name ? 'tv' : 'movie') : '';
+
+        Object.keys(previous).forEach(function (hash) {
+          var oldRoad = previous[hash];
+          var newRoad = value[hash];
+          if (typeof oldRoad === 'number') oldRoad = { percent: oldRoad, time: 0, duration: 0, updated: 0 };
+          if (typeof newRoad === 'number') newRoad = { percent: newRoad, time: 0, duration: 0, updated: 0 };
+          if (!oldRoad || typeof oldRoad !== 'object' || !newRoad || typeof newRoad !== 'object') return;
+          var oldUpdated = Number(oldRoad.updated) || 0;
+          var newUpdated = Number(newRoad.updated) || 0;
+          var localIsNewer = oldUpdated > newUpdated ||
+            (!oldUpdated && !newUpdated && Number(oldRoad.percent) > Number(newRoad.percent));
+          if (!localIsNewer) return;
+
+          value[hash] = cloneObject(oldRoad);
+          if (cardId && queueTimecode(currentId(), cardId, hash, oldRoad)) {
+            setTimeout(reconcileBeforeLoad, 1000);
+          }
+        });
+      }
+
       var result = originalSet.apply(Lampa.Storage, arguments);
 
       // sync.js writes this marker only after a successful import or export.
       if (name === 'lampac_sync_favorite' || name === 'lampac_sync_view') markSynced();
 
-      // The server Sync plugin imports file_view with nolisten=true.  Lampa's
-      // Timeline has already read its in-memory copy by then, so refresh it.
-      if (syncEnabled() && activeSyncId === currentId() && nolisten && (name === 'file_view' || String(name).indexOf('file_view_') === 0)) {
-        refreshTimelineAfterSyncImport();
+      if (isTimecodeName(name)) {
+        localTimecodes[name] = cloneObject(value);
+        // The TimeCode plugin writes file_view with nolisten=true. Lampa's
+        // Timeline may still hold its earlier in-memory copy.
+        if (syncEnabled() && activeSyncId === currentId() && nolisten) refreshTimelineAfterSyncImport();
       }
 
       return result;
@@ -214,12 +592,16 @@
       syncLoadInFlight = false;
       if (!syncEnabled() || currentId() !== id) return;
 
+      // Keep a baseline while the server plugin is unavailable so edits made
+      // during its retry window are also sent before a later import.
+      rememberOfflineBase();
+
       if (!syncLoadErrorShown) Lampa.Noty.show('Не вдалося завантажити синхронізацію. Повторюємо спробу…');
       syncLoadErrorShown = true;
       clearTimeout(syncRetryTimer);
       syncRetryTimer = setTimeout(function () {
         syncRetryTimer = 0;
-        loadSync();
+        reconcileBeforeLoad();
       }, syncRetryDelay);
       syncRetryDelay = Math.min(syncRetryDelay * 2, 60000);
     }, function () {
@@ -336,9 +718,16 @@
       param: { name: ENABLED_KEY, type: 'trigger', default: true },
       field: {
         name: 'Синхронізація між пристроями',
-        description: 'Увімкніть, щоб синхронізувати закладки та час перегляду між підключеними пристроями.'
+        description: 'Після повторного ввімкнення офлайн-зміни спочатку передаються на сервер, а потім завантажуються дані інших пристроїв.'
       },
-      onChange: reloadSilently
+      onChange: function () {
+        if (!syncEnabled() && !rememberOfflineBase()) {
+          Lampa.Storage.set(ENABLED_KEY, true);
+          reloadSilently();
+          return;
+        }
+        reloadSilently();
+      }
     });
 
     Lampa.SettingsApi.addParam({
@@ -361,9 +750,10 @@
       return true;
     }
 
+    rememberOfflineTimecodes();
     if (syncEnabled()) {
       watchSyncTimecodes();
-      loadSync();
+      reconcileBeforeLoad();
     }
     addSettings();
     enableBackdropClose();
