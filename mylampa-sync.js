@@ -229,6 +229,10 @@
     try { return date.toLocaleString(lang() === 'uk' ? 'uk-UA' : lang() === 'ru' ? 'ru-RU' : 'en-US'); }
     catch (error) { return date.toLocaleString(); }
   }
+  function markLastSync(accountId) {
+    try { window.localStorage.setItem(LAST_PREFIX + accountId, String(Date.now())); }
+    catch (storageError) {}
+  }
   function refreshStatus(item) {
     var root = item && item.find ? item : $(document);
     root.find('.mylampa-account-user').text(session && session.user ?
@@ -504,7 +508,7 @@
       if (!writeJson(BASE_PREFIX + accountId, remote)) return scheduleSync(30000);
       applyState(merged);
       writeJson(LOCAL_PREFIX + accountId, merged);
-      try { window.localStorage.setItem(LAST_PREFIX + accountId, String(Date.now())); } catch (storageError) {}
+      markLastSync(accountId);
       refreshStatus();
       if (Object.keys(recent.categories).length || Object.keys(codes).length || remoteDirty) scheduleSync(500);
     });
@@ -529,16 +533,24 @@
       online = true;
       acceptServerSnapshot(data.user);
       var remote = { favorite: data.favorite || {}, timecodes: data.timecodes || {} };
+      var baseline = readJson(BASE_PREFIX + accountId, null);
+      if (baseline && (JSON.stringify(baseline.favorite || {}) !== JSON.stringify(remote.favorite) ||
+          JSON.stringify(baseline.timecodes || {}) !== JSON.stringify(remote.timecodes))) remoteDirty = true;
       var active = readLocal(ACTIVE_KEY);
-      if (active !== accountId) {
+      if (active !== accountId || !baseline) {
         var local = localState();
         if (!active) writeJson(GUEST_KEY, local);
         var stored = readJson(LOCAL_PREFIX + accountId, null);
-        applyState(stored || mergeFirstSignIn(remote, local));
+        applyState(baseline && stored ? stored : mergeFirstSignIn(remote, stored || local));
         try { window.localStorage.setItem(ACTIVE_KEY, accountId); } catch (storageError) {}
       }
-      if (!readJson(BASE_PREFIX + accountId, null)) writeJson(BASE_PREFIX + accountId, remote);
+      if (!baseline) writeJson(BASE_PREFIX + accountId, remote);
       watchChanges();
+      var current = localState();
+      var before = baseline || remote;
+      var pending = changesBetween(before.favorite, current.favorite);
+      if (enabled() && !remoteDirty && pending && !Object.keys(pending.categories).length &&
+          !Object.keys(timecodeChanges(before.timecodes, current.timecodes)).length) markLastSync(accountId);
       refreshStatus();
       scheduleSync(100);
     });
