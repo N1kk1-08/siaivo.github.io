@@ -15,15 +15,18 @@
   var CATEGORIES = ['history', 'like', 'watch', 'wath', 'book', 'look', 'viewed', 'scheduled', 'continued', 'thrown'];
   var session = null;
   var online = false;
+  var remoteDirty = false;
   var syncInFlight = false;
   var retryDelay = 2000;
   var syncErrorShown = false;
   var syncTimer = 0;
+  var timecodeTimer = 0;
   var statusTimer = 0;
   var cabinetOpen = false;
   var ignoreBackdropClickUntil = 0;
   var watching = false;
   var timelineBound = false;
+  var playerEventsBound = false;
   var importing = false;
 
   var WORDS = {
@@ -250,9 +253,12 @@
   function leaveAccount(reason, preserveLocal) {
     clearTimeout(syncTimer);
     syncTimer = 0;
+    clearTimeout(timecodeTimer);
+    timecodeTimer = 0;
     if (session && session.user) saveCurrentAccountState();
     session = null;
     online = false;
+    remoteDirty = false;
     removeLocal(SESSION_KEY);
     removeLocal(ACTIVE_KEY);
     var guest = readJson(GUEST_KEY, null);
@@ -449,6 +455,13 @@
     clearTimeout(syncTimer);
     syncTimer = setTimeout(syncNow, delay || 0);
   }
+  function acceptServerSnapshot(user) {
+    if (!user || !session || !session.user) return;
+    var knownRevision = Number(session.user.revision || 0);
+    var receivedRevision = Number(user.revision || 0);
+    remoteDirty = receivedRevision < knownRevision;
+    if (receivedRevision >= knownRevision) session.user = user;
+  }
   function syncNow() {
     syncTimer = 0;
     if (!session || !online || !enabled() || syncInFlight) return;
@@ -459,9 +472,11 @@
     var patch = changesBetween(before.favorite, start.favorite);
     if (!patch) { notify(t('noCard')); return scheduleSync(30000); }
     patch.timecodes = timecodeChanges(before.timecodes, start.timecodes);
+    var localDirty = !!(Object.keys(patch.categories).length || Object.keys(patch.timecodes).length);
+    if (!localDirty && !remoteDirty) return;
     syncInFlight = true;
     refreshStatus();
-    request('POST', 'sync', patch, function (error, data) {
+    request(localDirty ? 'POST' : 'GET', localDirty ? 'sync' : 'state', localDirty ? patch : null, function (error, data) {
       syncInFlight = false;
       refreshStatus();
       if (!session || session.user.id !== accountId) return;
@@ -476,6 +491,7 @@
       if (!enabled()) return;
       retryDelay = 2000;
       syncErrorShown = false;
+      acceptServerSnapshot(data.user);
       var current = localState();
       var recent = changesBetween(start.favorite, current.favorite);
       if (!recent) { notify(t('noCard')); return scheduleSync(30000); }
@@ -490,7 +506,7 @@
       writeJson(LOCAL_PREFIX + accountId, merged);
       try { window.localStorage.setItem(LAST_PREFIX + accountId, String(Date.now())); } catch (storageError) {}
       refreshStatus();
-      if (Object.keys(recent.categories).length || Object.keys(codes).length) scheduleSync(500);
+      if (Object.keys(recent.categories).length || Object.keys(codes).length || remoteDirty) scheduleSync(500);
     });
   }
   function initializeAccount() {
@@ -511,6 +527,7 @@
       retryDelay = 2000;
       syncErrorShown = false;
       online = true;
+      acceptServerSnapshot(data.user);
       var remote = { favorite: data.favorite || {}, timecodes: data.timecodes || {} };
       var active = readLocal(ACTIVE_KEY);
       if (active !== accountId) {
@@ -531,13 +548,44 @@
       watching = true;
       Lampa.Storage.listener.follow('change', function (event) {
         if (!session || importing || !event || !event.name) return;
-        if (event.name === 'favorite' || String(event.name).indexOf('file_view') === 0) {
+        if (event.name === 'favorite') {
           saveCurrentAccountState();
           scheduleSync(1000);
+        } else if (String(event.name).indexOf('file_view') === 0) {
+          saveCurrentAccountState();
+          scheduleTimecodeSync();
         }
       });
     }
     bindTimeline();
+    bindPlayerEvents();
+  }
+  function scheduleTimecodeSync() {
+    clearTimeout(timecodeTimer);
+    timecodeTimer = setTimeout(function () {
+      timecodeTimer = 0;
+      scheduleSync(250);
+    }, 30000);
+  }
+  function flushTimecodes() {
+    clearTimeout(timecodeTimer);
+    timecodeTimer = 0;
+    setTimeout(function () {
+      if (!session || importing) return;
+      saveCurrentAccountState();
+      scheduleSync(500);
+    }, 500);
+  }
+  function bindPlayerEvents() {
+    if (playerEventsBound) return;
+    if (!Lampa.Player || !Lampa.Player.listener || !Lampa.Player.listener.follow ||
+        !Lampa.PlayerVideo || !Lampa.PlayerVideo.listener || !Lampa.PlayerVideo.listener.follow) {
+      return setTimeout(bindPlayerEvents, 500);
+    }
+    playerEventsBound = true;
+    Lampa.PlayerVideo.listener.follow('pause', flushTimecodes);
+    Lampa.PlayerVideo.listener.follow('ended', flushTimecodes);
+    Lampa.Player.listener.follow('destroy', flushTimecodes);
   }
   function bindTimeline() {
     if (timelineBound) return;
@@ -545,7 +593,7 @@
       timelineBound = true;
       Lampa.Timeline.listener.follow('update', function () {
         if (!session || importing) return;
-        setTimeout(function () { saveCurrentAccountState(); scheduleSync(1000); }, 500);
+        setTimeout(function () { saveCurrentAccountState(); scheduleTimecodeSync(); }, 500);
       });
     } else setTimeout(bindTimeline, 500);
   }
@@ -556,9 +604,12 @@
       if (!session || session.token !== token) return;
       if (error) { onUnauthorized(error); return; }
       online = true;
-      session.user = data.user;
+      var knownRevision = Number(session.user.revision || 0);
+      var receivedRevision = Number(data.user.revision || 0);
+      if (receivedRevision > knownRevision) remoteDirty = true;
+      if (receivedRevision >= knownRevision) session.user = data.user;
       refreshStatus();
-      if (enabled()) scheduleSync(250);
+      if (enabled() && remoteDirty) scheduleSync(250);
     });
   }
   function removeLegacySync() {
@@ -660,7 +711,6 @@
     if (session && session.token && session.user && session.user.id && session.user.username) {
       initializeAccount();
       statusTimer = setInterval(checkSession, 15000);
-      setInterval(function () { if (enabled()) scheduleSync(100); }, 20000);
     } else session = null;
     refreshStatus();
     return true;
