@@ -2,765 +2,668 @@
   'use strict';
 
   var COMPONENT = 'mylampa_account';
-  var ID_KEY = 'mylampa_sync_id';
-  var JOIN_KEY = 'mylampa_sync_join_id';
-  var LOADED_KEY = 'mylampa_sync_loaded_id';
-  var ENABLED_KEY = 'mylampa_sync_enabled';
-  var LAST_SYNC_KEY = 'mylampa_last_sync_at';
-  var OFFLINE_BASE_PREFIX = 'mylampa_sync_offline_base_';
-  var TIMECODE_QUEUE_PREFIX = 'mylampa_sync_timecode_queue_';
-  var RECONCILED_KEY = 'mylampa_sync_reconciled_id';
-  var BOOKMARK_CATEGORIES = ['history', 'like', 'watch', 'wath', 'book', 'look', 'viewed', 'scheduled', 'continued', 'thrown'];
+  var SESSION_KEY = 'mylampa_account_session_v1';
+  var OWNER_PREFIX = 'mylampa_account_owner_';
+  var ACTIVE_KEY = 'mylampa_account_active_v1';
+  var GUEST_KEY = 'mylampa_account_guest_v1';
+  var BASE_PREFIX = 'mylampa_account_base_';
+  var LOCAL_PREFIX = 'mylampa_account_local_';
+  var LAST_PREFIX = 'mylampa_account_last_';
+  var ARCHIVE_PREFIX = 'mylampa_account_archive_';
+  var ENABLED_KEY = 'mylampa_account_enabled';
+  var NOTICE_KEY = 'mylampa_account_notice';
+  var CATEGORIES = ['history', 'like', 'watch', 'wath', 'book', 'look', 'viewed', 'scheduled', 'continued', 'thrown'];
+  var session = null;
+  var online = false;
+  var syncInFlight = false;
+  var retryDelay = 2000;
+  var syncErrorShown = false;
+  var syncTimer = 0;
+  var statusTimer = 0;
   var cabinetOpen = false;
   var ignoreBackdropClickUntil = 0;
-  var timelineRefreshTimer = 0;
-  var activeSyncId = '';
-  var syncLoadInFlight = false;
-  var syncRetryTimer = 0;
-  var syncRetryDelay = 2000;
-  var syncLoadErrorShown = false;
-  var reconcileInFlight = false;
-  var reconcileTimer = 0;
-  var reconcileDelay = 2000;
-  var reconcileErrorShown = false;
+  var watching = false;
+  var timelineBound = false;
+  var importing = false;
 
-  function normalizeId(value) {
-    value = String(value || '').trim().toLowerCase();
-    return /^[a-z0-9-]{6}$/.test(value) ? value : '';
-  }
-
-  function makeId() {
-    var alphabet = 'abcdefghjkmnpqrstuvwxyz23456789';
-    var values = '';
-    var i;
-
-    if (window.crypto && window.crypto.getRandomValues) {
-      var bytes = new Uint8Array(1);
-      var limit = 256 - (256 % alphabet.length);
-      for (i = 0; i < 6; i++) {
-        do {
-          window.crypto.getRandomValues(bytes);
-        } while (bytes[0] >= limit);
-        values += alphabet.charAt(bytes[0] % alphabet.length);
-      }
-    } else {
-      for (i = 0; i < 6; i++) values += alphabet.charAt(Math.floor(Math.random() * alphabet.length));
+  var WORDS = {
+    uk: {
+      cabinet: 'Кабінет користувача', account: 'Акаунт', guest: 'Ви не увійшли в акаунт',
+      owner: 'Власник', register: 'Створити акаунт', login: 'Увійти в акаунт',
+      username: 'Ім’я акаунта', password: 'Пароль', repeatPassword: 'Повторіть пароль',
+      registerHelp: 'Створіть акаунт власника, а потім увійдіть у нього на інших пристроях.',
+      loginHelp: 'Увійдіть з тим самим ім’ям і паролем на іншому пристрої.',
+      sync: 'Синхронізація між пристроями', syncHelp: 'Після повторного ввімкнення зміни, зроблені офлайн, будуть об’єднані з даними акаунта.',
+      last: 'Остання синхронізація', never: 'Ще не синхронізовано', pending: 'Синхронізація…',
+      disabled: 'Синхронізацію вимкнено', logout: 'Вийти з акаунта',
+      logoutOthers: 'Вийти з акаунта на інших пристроях',
+      logoutOthersHelp: 'Усі інші пристрої втратять доступ до цього акаунта.',
+      deleteAccount: 'Видалити акаунт', deleteHelp: 'Видаляє вхід і зупиняє синхронізацію. Історія, закладки й таймкоди залишаться.',
+      deleteTitle: 'Видалити акаунт?', deleteText: 'Усі пристрої вийдуть з акаунта. Їхні локальні дані залишаться, а серверна копія збережеться в архіві.',
+      confirm: 'Продовжити', cancel: 'Скасувати',
+      ownerLogoutNotice: 'Власник акаунта вийшов з акаунта на інших пристроях',
+      deletedNotice: 'Акаунт видалено власником',
+      nameInvalid: 'Ім’я: 3–32 латинські літери, цифри, крапка, дефіс або підкреслення.',
+      passwordInvalid: 'Пароль має містити від 8 до 128 символів.',
+      passwordsDiffer: 'Паролі не збігаються.',
+      badCredentials: 'Неправильне ім’я акаунта або пароль.',
+      nameTaken: 'Це ім’я акаунта вже зайняте.',
+      rateLimited: 'Забагато спроб. Спробуйте пізніше.',
+      ownerOnly: 'Ця дія доступна лише власнику акаунта.',
+      networkError: 'Немає з’єднання із сервером акаунтів.',
+      serverError: 'Помилка сервера акаунтів.',
+      storageError: 'Не вдалося зберегти дані на пристрої. Перевірте вільне місце та налаштування сховища.',
+      syncError: 'Не вдалося синхронізувати дані. Повторимо спробу.',
+      syncRejected: 'Сервер відхилив частину даних. Локальна копія збережена; синхронізацію буде повторено.',
+      noCard: 'У локальних закладках бракує даних фільму. Синхронізацію відкладено.',
+      othersLoggedOut: 'Інші пристрої вийшли з акаунта',
+      accountDeleted: 'Акаунт видалено. Дані збережено',
+      accountCreated: 'Акаунт створено', accountEntered: 'Вхід виконано'
+    },
+    ru: {
+      cabinet: 'Кабинет пользователя', account: 'Аккаунт', guest: 'Вы не вошли в аккаунт',
+      owner: 'Владелец', register: 'Создать аккаунт', login: 'Войти в аккаунт',
+      username: 'Имя аккаунта', password: 'Пароль', repeatPassword: 'Повторите пароль',
+      registerHelp: 'Создайте аккаунт владельца, затем войдите в него на других устройствах.',
+      loginHelp: 'Войдите с тем же именем и паролем на другом устройстве.',
+      sync: 'Синхронизация между устройствами', syncHelp: 'После повторного включения изменения, сделанные офлайн, объединятся с данными аккаунта.',
+      last: 'Последняя синхронизация', never: 'Ещё не синхронизировано', pending: 'Синхронизация…',
+      disabled: 'Синхронизация выключена', logout: 'Выйти из аккаунта',
+      logoutOthers: 'Выйти из аккаунта на других устройствах',
+      logoutOthersHelp: 'Все остальные устройства потеряют доступ к этому аккаунту.',
+      deleteAccount: 'Удалить аккаунт', deleteHelp: 'Удаляет вход и останавливает синхронизацию. История, закладки и таймкоды останутся.',
+      deleteTitle: 'Удалить аккаунт?', deleteText: 'Все устройства выйдут из аккаунта. Локальные данные останутся, а серверная копия сохранится в архиве.',
+      confirm: 'Продолжить', cancel: 'Отмена',
+      ownerLogoutNotice: 'Владелец аккаунта вышел из аккаунта на других устройствах',
+      deletedNotice: 'Аккаунт удалён владельцем',
+      nameInvalid: 'Имя: 3–32 латинские буквы, цифры, точка, дефис или подчёркивание.',
+      passwordInvalid: 'Пароль должен содержать от 8 до 128 символов.',
+      passwordsDiffer: 'Пароли не совпадают.',
+      badCredentials: 'Неверное имя аккаунта или пароль.',
+      nameTaken: 'Это имя аккаунта уже занято.',
+      rateLimited: 'Слишком много попыток. Повторите позже.',
+      ownerOnly: 'Это действие доступно только владельцу аккаунта.',
+      networkError: 'Нет соединения с сервером аккаунтов.',
+      serverError: 'Ошибка сервера аккаунтов.',
+      storageError: 'Не удалось сохранить данные на устройстве. Проверьте свободное место и настройки хранилища.',
+      syncError: 'Не удалось синхронизировать данные. Повторим попытку.',
+      syncRejected: 'Сервер отклонил часть данных. Локальная копия сохранена; синхронизация повторится.',
+      noCard: 'В локальных закладках не хватает данных фильма. Синхронизация отложена.',
+      othersLoggedOut: 'Другие устройства вышли из аккаунта',
+      accountDeleted: 'Аккаунт удалён. Данные сохранены',
+      accountCreated: 'Аккаунт создан', accountEntered: 'Вход выполнен'
+    },
+    en: {
+      cabinet: 'User account', account: 'Account', guest: 'You are not signed in',
+      owner: 'Owner', register: 'Create account', login: 'Sign in',
+      username: 'Account name', password: 'Password', repeatPassword: 'Repeat password',
+      registerHelp: 'Create the owner account, then sign in on your other devices.',
+      loginHelp: 'Use the same account name and password on another device.',
+      sync: 'Sync between devices', syncHelp: 'Changes made while sync is off are merged when you turn it back on.',
+      last: 'Last synchronization', never: 'Not synchronized yet', pending: 'Synchronizing…',
+      disabled: 'Synchronization is off', logout: 'Sign out',
+      logoutOthers: 'Sign out on other devices',
+      logoutOthersHelp: 'All other devices will lose access to this account.',
+      deleteAccount: 'Delete account', deleteHelp: 'Removes sign-in and stops syncing. History, bookmarks and timecodes remain.',
+      deleteTitle: 'Delete account?', deleteText: 'All devices will sign out. Local data remains, and the server copy is archived.',
+      confirm: 'Continue', cancel: 'Cancel',
+      ownerLogoutNotice: 'The account owner signed out on other devices',
+      deletedNotice: 'The account was deleted by its owner',
+      nameInvalid: 'Name: 3–32 Latin letters, digits, dots, hyphens or underscores.',
+      passwordInvalid: 'The password must be 8–128 characters long.',
+      passwordsDiffer: 'Passwords do not match.',
+      badCredentials: 'Wrong account name or password.',
+      nameTaken: 'This account name is already taken.',
+      rateLimited: 'Too many attempts. Try again later.',
+      ownerOnly: 'Only the account owner can do this.',
+      networkError: 'Cannot reach the account server.',
+      serverError: 'Account server error.',
+      storageError: 'Could not save data on this device. Check free space and storage settings.',
+      syncError: 'Could not sync data. Retrying.',
+      syncRejected: 'The server rejected some data. The local copy is kept; sync will retry.',
+      noCard: 'A local bookmark is missing its movie details. Sync is postponed.',
+      othersLoggedOut: 'Other devices signed out',
+      accountDeleted: 'Account deleted. Data kept',
+      accountCreated: 'Account created', accountEntered: 'Signed in'
     }
+  };
 
-    return values;
+  function lang() {
+    var code = String(Lampa.Storage.get('language', 'uk')).toLowerCase().split(/[-_]/)[0];
+    return WORDS[code] ? code : 'uk';
   }
-
-  function currentId() {
-    var id = normalizeId(Lampa.Storage.get(ID_KEY, ''));
-
-    if (!id) {
-      id = makeId();
-      Lampa.Storage.set(ID_KEY, id);
-    }
-
-    return id;
+  function t(key) { return WORDS[lang()][key] || WORDS.uk[key] || key; }
+  function notify(message) { if (Lampa.Noty && Lampa.Noty.show) Lampa.Noty.show(message); }
+  function clone(value, fallback) {
+    try { return JSON.parse(JSON.stringify(value)); } catch (error) { return fallback; }
   }
-
-  function serverUrl() {
-    if (window.location.protocol === 'http:' || window.location.protocol === 'https:') {
-      return window.location.protocol + '//' + window.location.host;
-    }
-
-    // Android may run the page from file:// while loading Lampa from lampa_url.
-    var remote = String(window.lampa_url || '');
-    var match = remote.match(/^https?:\/\/[^/]+/i);
-    return match ? match[0] : '';
-  }
-
-  function syncEnabled() {
-    return String(Lampa.Storage.get(ENABLED_KEY, 'true')) === 'true';
-  }
-
-  function lastSyncText() {
-    var timestamp = Number(Lampa.Storage.get(LAST_SYNC_KEY, 0));
-    var date;
-
-    if (syncEnabled() && (reconcileInFlight || reconcileTimer ||
-        storageGet(OFFLINE_BASE_PREFIX + currentId()) ||
-        Object.keys(readJson(timecodeQueueKey(currentId()), {}) || {}).length)) {
-      return 'Офлайн-зміни очікують синхронізації';
-    }
-    if (!timestamp) return 'Ще не синхронізовано';
-    date = new Date(timestamp);
-    if (isNaN(date.getTime())) return 'Ще не синхронізовано';
-
-    try {
-      return date.toLocaleString('uk-UA', {
-        day: '2-digit', month: '2-digit', year: 'numeric',
-        hour: '2-digit', minute: '2-digit'
-      });
-    } catch (error) {
-      return date.toLocaleString();
-    }
-  }
-
-  function showLastSync(item) {
-    (item && item.find ? item.find('.mylampa-sync-last') : $('.mylampa-sync-last')).text(lastSyncText());
-  }
-
-  function markSynced() {
-    if (!syncEnabled() || !activeSyncId || currentId() !== activeSyncId) return;
-    Lampa.Storage.set(LAST_SYNC_KEY, Date.now(), true);
-    showLastSync();
-  }
-
-  function reloadSilently() {
-    setTimeout(function () { window.location.reload(); }, 80);
-  }
-
   function readJson(key, fallback) {
-    try {
-      var value = window.localStorage.getItem(key);
-      return value ? JSON.parse(value) : fallback;
-    } catch (error) {
-      return fallback;
-    }
+    try { var value = window.localStorage.getItem(key); return value ? JSON.parse(value) : fallback; }
+    catch (error) { return fallback; }
   }
-
-  function storageGet(key) {
-    try { return window.localStorage.getItem(key); }
-    catch (error) { return null; }
-  }
-
   function writeJson(key, value) {
-    try {
-      window.localStorage.setItem(key, JSON.stringify(value));
-      return true;
-    } catch (error) {
-      Lampa.Noty.show('Не вдалося зберегти офлайн-зміни на цьому пристрої.');
-      return false;
-    }
+    try { window.localStorage.setItem(key, JSON.stringify(value)); return true; }
+    catch (error) { notify(t('storageError')); return false; }
   }
-
-  function favoriteSnapshot() {
-    var value = Lampa.Storage.get('favorite', {});
-    try {
-      return value && typeof value === 'object' ? JSON.parse(JSON.stringify(value)) : {};
-    } catch (error) {
-      return {};
-    }
+  function storageAvailable() {
+    var key = 'mylampa_account_storage_probe';
+    try { window.localStorage.setItem(key, 'ok'); window.localStorage.removeItem(key); return true; }
+    catch (error) { notify(t('storageError')); return false; }
   }
-
-  function cloneObject(value) {
-    try { return value && typeof value === 'object' ? JSON.parse(JSON.stringify(value)) : {}; }
-    catch (error) { return {}; }
+  function removeLocal(key) { try { window.localStorage.removeItem(key); } catch (error) {} }
+  function readLocal(key) { try { return window.localStorage.getItem(key) || ''; } catch (error) { return ''; } }
+  function enabled() { return String(Lampa.Storage.get(ENABLED_KEY, true)) !== 'false'; }
+  function apiBase() {
+    if (window.mylampaAccountApiBase) return String(window.mylampaAccountApiBase).replace(/\/$/, '');
+    var source = window.location.protocol === 'http:' || window.location.protocol === 'https:' ?
+      window.location.href : String(window.lampa_url || '');
+    var match = source.match(/^(https?):\/\/(\[[^\]]+\]|[^/:]+)/i);
+    return match ? match[1].toLowerCase() + '://' + match[2] + ':9120' : '';
   }
-
-  function bookmarkMembershipSnapshot() {
-    var favorite = favoriteSnapshot();
-    var snapshot = {};
-    BOOKMARK_CATEGORIES.forEach(function (where) {
-      snapshot[where] = Array.isArray(favorite[where]) ? favorite[where].slice() : [];
-    });
-    return snapshot;
-  }
-
-  function rememberOfflineBase() {
-    var key = OFFLINE_BASE_PREFIX + currentId();
-    return !!storageGet(key) || writeJson(key, bookmarkMembershipSnapshot());
-  }
-
-  function timecodeQueueKey(id) {
-    return TIMECODE_QUEUE_PREFIX + id;
-  }
-
-  function queueTimecode(id, cardId, hash, road) {
-    var key = timecodeQueueKey(id);
-    var queue = readJson(key, {});
-    if (!queue || typeof queue !== 'object' || Array.isArray(queue)) queue = {};
-    queue[cardId + '|' + hash] = { cardId: cardId, hash: String(hash), road: cloneObject(road) };
-    return writeJson(key, queue);
-  }
-
-  function rememberOfflineTimecodes() {
-    if (window.mylampaSyncOfflineTimelineBound) return;
-    if (!Lampa.Timeline || !Lampa.Timeline.listener || !Lampa.Timeline.listener.follow) {
-      setTimeout(rememberOfflineTimecodes, 500);
-      return;
-    }
-
-    window.mylampaSyncOfflineTimelineBound = true;
-    Lampa.Timeline.listener.follow('update', function (event) {
-      if (syncEnabled() && !reconcileInFlight) return;
-      if (!event || !event.data || !event.data.road || !event.data.hash) return;
-
-      var activity = Lampa.Storage.get('activity', {});
-      var card = activity && (activity.movie || activity.card);
-      if (!card || !card.id) return;
-
-      var cardId = String(card.id) + '_' + (card.name ? 'tv' : 'movie');
-      queueTimecode(currentId(), cardId, event.data.hash, event.data.road);
-    });
-  }
-
-  function apiUrl(path, id, extra) {
-    var url = serverUrl() + path;
-    var params = {
-      token: id,
-      account_email: Lampa.Storage.get('account_email', ''),
-      uid: Lampa.Storage.get('lampac_unic_id', ''),
-      profile_id: Lampa.Storage.get('lampac_profile_id', ''),
-      connectionId: window.lwsEvent && window.lwsEvent.connectionId || ''
-    };
-    var name;
-    if (extra) for (name in extra) if (Object.prototype.hasOwnProperty.call(extra, name)) params[name] = extra[name];
-    for (name in params) {
-      if (Object.prototype.hasOwnProperty.call(params, name) && params[name] !== '' && params[name] !== null && typeof params[name] !== 'undefined') {
-        url = Lampa.Utils.addUrlComponent(url, encodeURIComponent(name) + '=' + encodeURIComponent(params[name]));
-      }
-    }
-    return url;
-  }
-
-  function apiRequest(method, url, body, contentType, callback) {
-    var request = new XMLHttpRequest();
-    var finished = false;
+  function request(method, endpoint, body, callback, token) {
+    var base = apiBase();
+    if (!base) return callback({ code: 'network_error' });
+    var xhr = new XMLHttpRequest();
+    var done = false;
     function finish(error, data) {
-      if (finished) return;
-      finished = true;
+      if (done) return;
+      done = true;
       callback(error, data);
     }
     try {
-      request.open(method, url, true);
-      request.timeout = 15000;
-      if (contentType) request.setRequestHeader('Content-Type', contentType);
-      request.onreadystatechange = function () {
-        if (request.readyState !== 4) return;
-        if (request.status < 200 || request.status >= 300) return finish('HTTP ' + request.status);
-        try { finish(null, JSON.parse(request.responseText)); }
-        catch (error) { finish('Некоректна відповідь сервера'); }
+      xhr.open(method, base + '/account/' + endpoint, true);
+      xhr.timeout = 15000;
+      xhr.setRequestHeader('Accept', 'application/json');
+      if (body !== null) xhr.setRequestHeader('Content-Type', 'application/json');
+      if (token || (session && session.token)) xhr.setRequestHeader('Authorization', 'Bearer ' + (token || session.token));
+      xhr.onreadystatechange = function () {
+        if (xhr.readyState !== 4) return;
+        var data = null;
+        try { data = JSON.parse(xhr.responseText || '{}'); } catch (error) {}
+        if (xhr.status >= 200 && xhr.status < 300 && data) finish(null, data);
+        else finish({ code: data && data.error || 'server_error', status: xhr.status });
       };
-      request.onerror = function () { finish('Немає з’єднання із сервером'); };
-      request.ontimeout = function () { finish('Сервер не відповідає'); };
-      request.send(body || null);
-    } catch (error) {
-      finish('Не вдалося виконати запит');
+      xhr.onerror = function () { finish({ code: 'network_error' }); };
+      xhr.ontimeout = function () { finish({ code: 'network_error' }); };
+      xhr.send(body === null ? null : JSON.stringify(body));
+    } catch (error) { finish({ code: 'network_error' }); }
+  }
+  function errorText(error) {
+    switch (error && error.code) {
+      case 'bad_credentials': return t('badCredentials');
+      case 'name_taken': return t('nameTaken');
+      case 'rate_limited': return t('rateLimited');
+      case 'owner_only': return t('ownerOnly');
+      case 'network_error': return t('networkError');
+      default: return t('serverError');
     }
   }
-
-  function getBookmarks(id, callback) {
-    apiRequest('GET', apiUrl('/bookmark/list', id), null, '', function (error, data) {
-      if (error) return callback(error);
-      if (!data || typeof data !== 'object' || Array.isArray(data)) return callback('Некоректний список закладок');
-      if (data.dbInNotInitialization === true) data = { card: [] };
-      if (!Array.isArray(data.card)) return callback('Некоректний список закладок');
-      callback(null, data);
+  function viewName() {
+    return Lampa.Timeline && Lampa.Timeline.filename ? Lampa.Timeline.filename() : 'file_view';
+  }
+  function localState() {
+    var favorite = Lampa.Storage.get('favorite', {});
+    var view = Lampa.Storage.get(viewName(), {});
+    return {
+      favorite: favorite && typeof favorite === 'object' ? clone(favorite, {}) : {},
+      timecodes: view && typeof view === 'object' ? clone(view, {}) : {}
+    };
+  }
+  function applyState(state) {
+    importing = true;
+    try {
+      Lampa.Storage.set('favorite', clone(state.favorite || {}, {}), true);
+      Lampa.Storage.set(viewName(), clone(state.timecodes || {}, {}), true);
+      if (Lampa.Favorite && Lampa.Favorite.init) Lampa.Favorite.init();
+      if (Lampa.Timeline && Lampa.Timeline.read) Lampa.Timeline.read();
+    } finally { importing = false; }
+  }
+  function accountKey(prefix) { return prefix + (session && session.user ? session.user.id : ''); }
+  function dateText(timestamp) {
+    if (!timestamp) return t('never');
+    var date = new Date(Number(timestamp));
+    if (isNaN(date.getTime())) return t('never');
+    try { return date.toLocaleString(lang() === 'uk' ? 'uk-UA' : lang() === 'ru' ? 'ru-RU' : 'en-US'); }
+    catch (error) { return date.toLocaleString(); }
+  }
+  function refreshStatus(item) {
+    var root = item && item.find ? item : $(document);
+    root.find('.mylampa-account-user').text(session && session.user ?
+      session.user.username + (session.user.owner ? ' (' + t('owner') + ')' : '') : t('guest'));
+    root.find('.mylampa-account-last').text(syncInFlight ? t('pending') :
+      session && !enabled() ? t('disabled') : dateText(readLocal(accountKey(LAST_PREFIX))));
+  }
+  function refreshVisibility(item) {
+    var root = item && item.attr ? item : null;
+    if (!root) return;
+    var name = root.attr('data-name');
+    var logged = !!(session && session.user);
+    var owner = logged && session.user.owner;
+    if (name === 'mylampa_account_register' || name === 'mylampa_account_login') root.toggle(!logged);
+    if (name === ENABLED_KEY || name === 'mylampa_account_logout') root.toggle(logged);
+    if (name === 'mylampa_account_logout_others' || name === 'mylampa_account_delete') root.toggle(owner);
+    refreshStatus(root);
+  }
+  function saveCurrentAccountState() {
+    if (session && session.user) writeJson(accountKey(LOCAL_PREFIX), localState());
+  }
+  function leaveAccount(reason, preserveLocal) {
+    clearTimeout(syncTimer);
+    syncTimer = 0;
+    if (session && session.user) saveCurrentAccountState();
+    session = null;
+    online = false;
+    removeLocal(SESSION_KEY);
+    removeLocal(ACTIVE_KEY);
+    var guest = readJson(GUEST_KEY, null);
+    if (!preserveLocal && guest) applyState(guest);
+    if (reason) writeJson(NOTICE_KEY, reason);
+    window.location.reload();
+  }
+  function onUnauthorized(error) {
+    if (!error || error.status !== 401) return false;
+    leaveAccount(error.code === 'owner_logout' ? 'ownerLogoutNotice' :
+      error.code === 'account_deleted' ? 'deletedNotice' : '', true);
+    return true;
+  }
+  function edit(title, password, callback) {
+    Lampa.Input.edit({ title: title, value: '', free: true, nosave: true, nomic: true,
+      password: !!password }, function (value) {
+      if (typeof value === 'string' && value.length) callback(value);
     });
   }
-
-  function cardMap(favorite) {
-    var map = {};
-    var cards = favorite && Array.isArray(favorite.card) ? favorite.card : [];
-    cards.forEach(function (card) {
-      if (card && card.id !== null && typeof card.id !== 'undefined') map[String(card.id)] = card;
-    });
-    return map;
-  }
-
-  function idSet(items) {
-    var set = {};
-    if (Array.isArray(items)) items.forEach(function (item) { set[String(item)] = true; });
-    return set;
-  }
-
-  function bookmarkChanges(base, local, remote) {
-    var additions = [];
-    var removals = [];
-    var cards = cardMap(local);
-    var missingCard = false;
-
-    BOOKMARK_CATEGORIES.forEach(function (where) {
-      var before = base ? idSet(base[where]) : null;
-      var onServer = idSet(remote[where]);
-      var now = Array.isArray(local[where]) ? local[where] : [];
-      var current = idSet(now);
-
-      // The first run has no baseline: preserve local-only entries, but never
-      // infer deletions from an old snapshot.
-      now.slice().reverse().forEach(function (item) {
-        var id = String(item);
-        if ((before && before[id]) || onServer[id]) return;
-        var card = cards[id];
-        if (!card) { missingCard = true; return; }
-        additions.push({ where: where, card: card, card_id: id, id: id });
-      });
-
-      if (before) Object.keys(before).forEach(function (id) {
-        if (!current[id] && onServer[id]) removals.push({ where: where, method: 'category', card_id: id, id: id });
-      });
-    });
-
-    return missingCard ? null : { additions: additions, removals: removals };
-  }
-
-  function postBookmarks(id, path, payload, callback) {
-    if (!payload.length) return callback(null);
-    apiRequest('POST', apiUrl('/bookmark/' + path, id), JSON.stringify(payload), 'application/json;charset=UTF-8', function (error, data) {
-      callback(error || !data || data.success !== true ? error || 'Сервер не зберіг закладки' : null);
-    });
-  }
-
-  function postTimecodes(id, callback) {
-    var key = timecodeQueueKey(id);
-    var queue = readJson(key, {});
-    var names = queue && typeof queue === 'object' && !Array.isArray(queue) ? Object.keys(queue) : [];
-    var index = 0;
-    var serverCards = {};
-
-    function forget(name, entry, done) {
-      var latest = readJson(key, {});
-      if (latest && JSON.stringify(latest[name]) === JSON.stringify(entry)) {
-        delete latest[name];
-        if (!writeJson(key, latest)) return callback('Не вдалося оновити чергу офлайн-змін');
-      }
-      setTimeout(done, 250);
-    }
-
-    function sendEntry(name, entry, serverRoad) {
-      if (typeof serverRoad === 'string') {
-        try { serverRoad = JSON.parse(serverRoad); }
-        catch (parseError) { return callback('Некоректний час перегляду на сервері'); }
-      }
-      var localUpdated = Number(entry.road.updated) || 0;
-      var serverUpdated = Number(serverRoad && serverRoad.updated) || 0;
-      var serverIsNewer = serverUpdated > localUpdated ||
-        (!serverUpdated && !localUpdated && Number(serverRoad && serverRoad.percent) >= Number(entry.road.percent));
-      if (serverRoad && serverIsNewer) return forget(name, entry, next);
-
-      var url = apiUrl('/timecode/add', id, { card_id: entry.cardId });
-      var body = 'id=' + encodeURIComponent(entry.hash) + '&data=' + encodeURIComponent(JSON.stringify(entry.road));
-      apiRequest('POST', url, body, 'application/x-www-form-urlencoded;charset=UTF-8', function (error, data) {
-        if (error || !data || data.success !== true) return callback(error || 'Сервер не зберіг час перегляду');
-        forget(name, entry, next);
-      });
-    }
-
-    function next() {
-      if (index >= names.length) return callback(null);
-      var name = names[index++];
-      var entry = queue[name];
-      if (!entry || !entry.cardId || !entry.hash || !entry.road) return callback('Некоректна черга часу перегляду');
-      if (Object.prototype.hasOwnProperty.call(serverCards, entry.cardId)) {
-        return sendEntry(name, entry, serverCards[entry.cardId][entry.hash]);
-      }
-
-      apiRequest('GET', apiUrl('/timecode/all', id, { card_id: entry.cardId }), null, '', function (error, data) {
-        if (error || !data || typeof data !== 'object' || Array.isArray(data)) return callback(error || 'Сервер не віддав час перегляду');
-        serverCards[entry.cardId] = data;
-        sendEntry(name, entry, data[entry.hash]);
-      });
-    }
-    next();
-  }
-
-  function retryReconcile(message) {
-    reconcileInFlight = false;
-    if (!syncEnabled()) return;
-    if (!reconcileErrorShown) Lampa.Noty.show(message + ' Повторюємо спробу…');
-    reconcileErrorShown = true;
-    clearTimeout(reconcileTimer);
-    reconcileTimer = setTimeout(function () {
-      reconcileTimer = 0;
-      reconcileBeforeLoad();
-    }, reconcileDelay);
-    reconcileDelay = Math.min(reconcileDelay * 2, 60000);
-    showLastSync();
-  }
-
-  function reconcileBeforeLoad() {
-    var id = currentId();
-    var base = readJson(OFFLINE_BASE_PREFIX + id, null);
-    var queue = readJson(timecodeQueueKey(id), {});
-    var local = favoriteSnapshot();
-    var localJson = JSON.stringify(local);
-    var hasLocalBookmarks = BOOKMARK_CATEGORIES.some(function (where) { return Array.isArray(local[where]) && local[where].length; });
-    var hasTimecodes = queue && typeof queue === 'object' && Object.keys(queue).length;
-
-    if (reconcileInFlight || !syncEnabled()) return;
-    if (!base && !hasTimecodes && (storageGet(RECONCILED_KEY) === id || !hasLocalBookmarks)) {
-      loadSync();
-      return;
-    }
-    if (!serverUrl()) return retryReconcile('Не вдалося визначити сервер синхронізації.');
-
-    reconcileInFlight = true;
-    showLastSync();
-    getBookmarks(id, function (error, remote) {
-      if (!syncEnabled() || currentId() !== id) { reconcileInFlight = false; return; }
-      if (error) return retryReconcile(error);
-      var changes = bookmarkChanges(base, local, remote);
-      if (!changes) return retryReconcile('У локальній історії бракує даних картки.');
-
-      postBookmarks(id, 'remove', changes.removals, function (removeError) {
-        if (!syncEnabled() || currentId() !== id) { reconcileInFlight = false; return; }
-        if (removeError) return retryReconcile(removeError);
-        postBookmarks(id, 'add', changes.additions, function (addError) {
-          if (!syncEnabled() || currentId() !== id) { reconcileInFlight = false; return; }
-          if (addError) return retryReconcile(addError);
-          postTimecodes(id, function (timecodeError) {
-            if (!syncEnabled() || currentId() !== id) { reconcileInFlight = false; return; }
-            if (timecodeError) return retryReconcile(timecodeError);
-            getBookmarks(id, function (verifyError, result) {
-              if (!syncEnabled() || currentId() !== id) { reconcileInFlight = false; return; }
-              if (verifyError) return retryReconcile(verifyError);
-              var complete = changes.additions.every(function (item) { return !!idSet(result[item.where])[item.id]; }) &&
-                changes.removals.every(function (item) { return !idSet(result[item.where])[item.id]; });
-              if (!complete) return retryReconcile('Сервер ще не підтвердив офлайн-зміни.');
-              var pendingTimecodes = readJson(timecodeQueueKey(id), {});
-              if (JSON.stringify(favoriteSnapshot()) !== localJson ||
-                  (pendingTimecodes && typeof pendingTimecodes === 'object' && Object.keys(pendingTimecodes).length)) {
-                reconcileInFlight = false;
-                return reconcileBeforeLoad();
-              }
-              try {
-                window.localStorage.setItem(RECONCILED_KEY, id);
-                window.localStorage.removeItem(OFFLINE_BASE_PREFIX + id);
-              } catch (storageError) {
-                return retryReconcile('Не вдалося завершити збереження офлайн-змін.');
-              }
-              reconcileInFlight = false;
-              reconcileDelay = 2000;
-              reconcileErrorShown = false;
-              showLastSync();
-              loadSync();
-            });
+  function createAccount() {
+    if (!storageAvailable()) return;
+    edit(t('username'), false, function (rawName) {
+      var username = rawName.trim().toLowerCase();
+      if (!/^[a-z0-9][a-z0-9_.-]{2,31}$/.test(username) ||
+          username === '__proto__' || username === 'constructor' || username === 'prototype') return notify(t('nameInvalid'));
+      edit(t('password'), true, function (password) {
+        if (password.length < 8 || password.length > 128) return notify(t('passwordInvalid'));
+        edit(t('repeatPassword'), true, function (repeat) {
+          if (password !== repeat) return notify(t('passwordsDiffer'));
+          request('POST', 'register', { username: username, password: password }, function (error, data) {
+            if (error) return notify(errorText(error));
+            if (!writeJson(OWNER_PREFIX + username, data.ownerProof)) return;
+            if (!writeJson(SESSION_KEY, { token: data.token, user: data.user })) return;
+            notify(t('accountCreated'));
+            window.location.reload();
           });
         });
       });
     });
   }
-
-  function closeCabinetFromBackdrop(event) {
-    var controller = Lampa.Controller && Lampa.Controller.enabled ? Lampa.Controller.enabled() : null;
-    var content = document.querySelector('.settings__content');
-
-    if (event.type === 'click' && Date.now() < ignoreBackdropClickUntil) {
-      event.preventDefault();
-      event.stopImmediatePropagation();
-      return;
-    }
-
-    if (!cabinetOpen || !document.body.classList.contains('settings--open')) return;
-    if (!controller || controller.name !== 'settings_component') return;
-    if (content && content.contains(event.target)) return;
-
-    // The stock click handler is unreliable on some mobile browsers.  Preserve
-    // Lampa's usual navigation: one tap outside equals one "Back" step.
-    ignoreBackdropClickUntil = Date.now() + 500;
-    event.preventDefault();
-    event.stopImmediatePropagation();
-    Lampa.Controller.back();
-  }
-
-  function enableBackdropClose() {
-    if (window.mylampaAccountBackdropCloseBound) return;
-    window.mylampaAccountBackdropCloseBound = true;
-
-    document.addEventListener(window.PointerEvent ? 'pointerup' : 'touchend', closeCabinetFromBackdrop, true);
-    document.addEventListener('click', closeCabinetFromBackdrop, true);
-
-    Lampa.Settings.listener.follow('open', function (event) {
-      cabinetOpen = !!event && event.name === COMPONENT;
-    });
-    Lampa.Settings.listener.follow('close', function () {
-      cabinetOpen = false;
-    });
-  }
-
-  function refreshTimelineAfterSyncImport() {
-    clearTimeout(timelineRefreshTimer);
-    timelineRefreshTimer = setTimeout(function () {
-      if (Lampa.Timeline && typeof Lampa.Timeline.read === 'function') Lampa.Timeline.read();
-    }, 0);
-  }
-
-  function watchSyncTimecodes() {
-    if (window.mylampaSyncTimecodeWatchBound) return;
-    if (!Lampa.Storage || typeof Lampa.Storage.set !== 'function') return;
-
-    window.mylampaSyncTimecodeWatchBound = true;
-    var originalSet = Lampa.Storage.set;
-    var localTimecodes = {};
-
-    function isTimecodeName(name) {
-      return name === 'file_view' || String(name).indexOf('file_view_') === 0;
-    }
-
-    function rememberTimecodes(name) {
-      localTimecodes[name] = cloneObject(Lampa.Storage.get(name, {}));
-    }
-
-    rememberTimecodes('file_view');
-    try {
-      for (var i = 0; i < window.localStorage.length; i++) {
-        var key = window.localStorage.key(i);
-        if (isTimecodeName(key)) rememberTimecodes(key);
-      }
-    } catch (error) {}
-
-    Lampa.Storage.set = function (name, value, nolisten) {
-      if (isTimecodeName(name) && nolisten && value && typeof value === 'object') {
-        var previous = localTimecodes[name] || {};
-        var activity = Lampa.Storage.get('activity', {});
-        var card = activity && (activity.movie || activity.card);
-        var cardId = card && card.id ? String(card.id) + '_' + (card.name ? 'tv' : 'movie') : '';
-
-        Object.keys(previous).forEach(function (hash) {
-          var oldRoad = previous[hash];
-          var newRoad = value[hash];
-          if (typeof oldRoad === 'number') oldRoad = { percent: oldRoad, time: 0, duration: 0, updated: 0 };
-          if (typeof newRoad === 'number') newRoad = { percent: newRoad, time: 0, duration: 0, updated: 0 };
-          if (!oldRoad || typeof oldRoad !== 'object' || !newRoad || typeof newRoad !== 'object') return;
-          var oldUpdated = Number(oldRoad.updated) || 0;
-          var newUpdated = Number(newRoad.updated) || 0;
-          var localIsNewer = oldUpdated > newUpdated ||
-            (!oldUpdated && !newUpdated && Number(oldRoad.percent) > Number(newRoad.percent));
-          if (!localIsNewer) return;
-
-          value[hash] = cloneObject(oldRoad);
-          if (cardId && queueTimecode(currentId(), cardId, hash, oldRoad)) {
-            setTimeout(reconcileBeforeLoad, 1000);
-          }
+  function login() {
+    if (!storageAvailable()) return;
+    edit(t('username'), false, function (rawName) {
+      var username = rawName.trim().toLowerCase();
+      if (!/^[a-z0-9][a-z0-9_.-]{2,31}$/.test(username) ||
+          username === '__proto__' || username === 'constructor' || username === 'prototype') return notify(t('nameInvalid'));
+      edit(t('password'), true, function (password) {
+        var ownerProof = readJson(OWNER_PREFIX + username, '');
+        request('POST', 'login', { username: username, password: password, ownerProof: ownerProof }, function (error, data) {
+          if (error) return notify(errorText(error));
+          if (!writeJson(SESSION_KEY, { token: data.token, user: data.user })) return;
+          notify(t('accountEntered'));
+          window.location.reload();
         });
-      }
-
-      var result = originalSet.apply(Lampa.Storage, arguments);
-
-      // sync.js writes this marker only after a successful import or export.
-      if (name === 'lampac_sync_favorite' || name === 'lampac_sync_view') markSynced();
-
-      if (isTimecodeName(name)) {
-        localTimecodes[name] = cloneObject(value);
-        // The TimeCode plugin writes file_view with nolisten=true. Lampa's
-        // Timeline may still hold its earlier in-memory copy.
-        if (syncEnabled() && activeSyncId === currentId() && nolisten) refreshTimelineAfterSyncImport();
-      }
-
-      return result;
-    };
-
-    // A successful /storage/get can legitimately contain no newer data.  It is
-    // still a completed synchronization check and deserves an updated status.
-    if (Lampa.Listener && typeof Lampa.Listener.follow === 'function') {
-      Lampa.Listener.follow('request_secuses', function (event) {
-        var url = event && event.params && event.params.url ? String(event.params.url) : '';
-        var storageGet = serverUrl() + '/storage/get';
-
-        if (url.split('?')[0] === storageGet && event.data && event.data.success) markSynced();
       });
-    }
-  }
-
-  function removeLegacyFlatSync() {
-    if (!Lampa.Plugins || typeof Lampa.Plugins.get !== 'function' || typeof Lampa.Plugins.remove !== 'function') return false;
-    if (!serverUrl()) return false;
-
-    var flatUrl = serverUrl() + '/sync.js';
-    var removed = false;
-
-    Lampa.Plugins.get().forEach(function (plugin) {
-      var url = typeof plugin === 'string' ? plugin : plugin && plugin.url;
-      if (!url || String(url).split('?')[0] !== flatUrl) return;
-
-      Lampa.Plugins.remove(plugin);
-      removed = true;
-    });
-
-    if (removed && typeof Lampa.Plugins.save === 'function') Lampa.Plugins.save();
-    return removed;
-  }
-
-  function loadSync() {
-    var id = currentId();
-    var base = serverUrl();
-
-    if (window[LOADED_KEY] === id || syncLoadInFlight) return;
-    if (!base) {
-      if (!syncLoadErrorShown) Lampa.Noty.show('Не вдалося визначити сервер синхронізації.');
-      syncLoadErrorShown = true;
-      return;
-    }
-
-    activeSyncId = id;
-    syncLoadInFlight = true;
-    Lampa.Utils.putScriptAsync([base + '/sync/js/' + encodeURIComponent(id)], null, function () {
-      syncLoadInFlight = false;
-      if (!syncEnabled() || currentId() !== id) return;
-
-      // Keep a baseline while the server plugin is unavailable so edits made
-      // during its retry window are also sent before a later import.
-      rememberOfflineBase();
-
-      if (!syncLoadErrorShown) Lampa.Noty.show('Не вдалося завантажити синхронізацію. Повторюємо спробу…');
-      syncLoadErrorShown = true;
-      clearTimeout(syncRetryTimer);
-      syncRetryTimer = setTimeout(function () {
-        syncRetryTimer = 0;
-        reconcileBeforeLoad();
-      }, syncRetryDelay);
-      syncRetryDelay = Math.min(syncRetryDelay * 2, 60000);
-    }, function () {
-      syncLoadInFlight = false;
-      if (!syncEnabled() || currentId() !== id) return;
-
-      window[LOADED_KEY] = id;
-      syncRetryDelay = 2000;
-      syncLoadErrorShown = false;
-      clearTimeout(syncRetryTimer);
-      syncRetryTimer = 0;
     });
   }
-
-  function applyJoinedId() {
-    var id = normalizeId(Lampa.Storage.get(JOIN_KEY, ''));
-
-    // The input can be opened and closed without entering anything.  In that
-    // case leave the cabinet untouched instead of showing a distracting toast.
-    if (!id) {
-      if (String(Lampa.Storage.get(JOIN_KEY, '')).trim()) Lampa.Noty.show('ID має містити рівно 6 символів: літери, цифри або дефіс.');
-      return;
-    }
-
-    if (id === currentId()) {
-      Lampa.Storage.set(JOIN_KEY, '');
-      return;
-    }
-
-    Lampa.Storage.set(ID_KEY, id);
-    Lampa.Storage.set(JOIN_KEY, '');
-    Lampa.Storage.set(LAST_SYNC_KEY, 0, true);
-    Lampa.Storage.set(ENABLED_KEY, true);
-    reloadSilently();
+  function logout() {
+    if (!session) return;
+    request('POST', 'logout', {}, function () { leaveAccount('', true); });
   }
-
-  function regenerateId() {
-    Lampa.Storage.set(ID_KEY, makeId());
-    Lampa.Storage.set(JOIN_KEY, '');
-    Lampa.Storage.set(LAST_SYNC_KEY, 0, true);
-    Lampa.Storage.set(ENABLED_KEY, true);
-    reloadSilently();
+  function logoutOthers() {
+    if (!session || !session.user.owner) return;
+    request('POST', 'logout-others', {}, function (error) {
+      if (error) return notify(errorText(error));
+      notify(t('othersLoggedOut'));
+    });
   }
-
-  function confirmRegenerateId() {
+  function deleteAccount() {
+    if (!session || !session.user.owner) return;
     Lampa.Modal.open({
-      title: 'Створити новий ID?',
-      html: $('<div class="about"><div>Поточний ID перестане синхронізувати дані. На інших пристроях потрібно буде ввести новий ID.</div></div>'),
+      title: t('deleteTitle'),
+      html: $('<div class="about"></div>').text(t('deleteText')),
       size: 'small',
       buttons: [
-        {
-          name: 'Створити новий ID',
-          onSelect: function () {
-            Lampa.Modal.close();
-            regenerateId();
-          }
-        },
-        {
-          name: 'Скасувати',
-          onSelect: function () { Lampa.Modal.close(); }
-        }
+        { name: t('confirm'), onSelect: function () {
+          Lampa.Modal.close();
+          edit(t('password'), true, function (password) {
+            request('POST', 'delete', { password: password }, function (error, data) {
+              if (error) return notify(errorText(error));
+              var name = session.user.username;
+              if (data && data.archiveId) writeJson(ARCHIVE_PREFIX + session.user.id, data.archiveId);
+              removeLocal(OWNER_PREFIX + name);
+              removeLocal(accountKey(BASE_PREFIX));
+              leaveAccount('accountDeleted', true);
+            });
+          });
+        } },
+        { name: t('cancel'), onSelect: function () { Lampa.Modal.close(); } }
       ],
       onBack: function () { Lampa.Modal.close(); }
     });
   }
-
+  function idSet(items) {
+    var set = Object.create(null);
+    if (Array.isArray(items)) items.forEach(function (item) { set[String(item)] = true; });
+    return set;
+  }
+  function changesBetween(before, after) {
+    var categories = {};
+    var cards = {};
+    var localCards = Object.create(null);
+    var allCards = after && after.card;
+    if (Array.isArray(allCards)) allCards.forEach(function (card) {
+      if (card && card.id !== null && typeof card.id !== 'undefined') localCards[String(card.id)] = card;
+    });
+    var missingCard = false;
+    CATEGORIES.forEach(function (category) {
+      var oldList = before && before[category] || [];
+      var newList = after && after[category] || [];
+      var oldSet = idSet(oldList);
+      var newSet = idSet(newList);
+      var added = (Array.isArray(newList) ? newList : []).filter(function (id) { return !oldSet[String(id)]; });
+      var removed = (Array.isArray(oldList) ? oldList : []).filter(function (id) { return !newSet[String(id)]; });
+      added.forEach(function (id) {
+        var card = localCards[String(id)];
+        if (!card) missingCard = true;
+        else cards[String(id)] = card;
+      });
+      if (added.length || removed.length) categories[category] = { add: added, remove: removed };
+    });
+    return missingCard ? null : { categories: categories, cards: cards };
+  }
+  function timecodeChanges(before, after) {
+    var changed = {};
+    Object.keys(after || {}).forEach(function (hash) {
+      var road = after[hash];
+      if (typeof road === 'number') road = { percent: road, time: 0, duration: 0, updated: 0 };
+      var previous = before && before[hash];
+      if (typeof previous === 'number') previous = { percent: previous, time: 0, duration: 0, updated: 0 };
+      if (road && typeof road === 'object' && JSON.stringify(road) !== JSON.stringify(previous)) changed[hash] = road;
+    });
+    return changed;
+  }
+  function applyFavoritePatch(favorite, patch) {
+    var value = clone(favorite, { card: [] });
+    if (!Array.isArray(value.card)) value.card = [];
+    var cards = Object.create(null);
+    value.card.forEach(function (card) { if (card && card.id != null) cards[String(card.id)] = card; });
+    Object.keys(patch.categories || {}).forEach(function (category) {
+      var change = patch.categories[category];
+      var remove = idSet(change.remove);
+      var list = (Array.isArray(value[category]) ? value[category] : []).filter(function (id) { return !remove[String(id)]; });
+      var have = idSet(list);
+      change.add.forEach(function (id) {
+        if (!have[String(id)]) { list.unshift(id); have[String(id)] = true; }
+        if (patch.cards[String(id)]) cards[String(id)] = patch.cards[String(id)];
+      });
+      value[category] = list;
+    });
+    value.card = Object.keys(cards).map(function (id) { return cards[id]; });
+    return value;
+  }
+  function mergeTimecodes(remote, recent) {
+    var merged = clone(remote || {}, {});
+    Object.keys(recent || {}).forEach(function (hash) {
+      var local = recent[hash];
+      if (typeof local === 'number') local = { percent: local, time: 0, duration: 0, updated: 0 };
+      if (!local || typeof local !== 'object') return;
+      var server = merged[hash];
+      if (!server || Number(local.updated || 0) > Number(server.updated || 0) ||
+          Number(local.percent || 0) > Number(server.percent || 0) &&
+          Number(local.updated || 0) === Number(server.updated || 0)) merged[hash] = local;
+    });
+    return merged;
+  }
+  function mergeFirstSignIn(remote, local) {
+    var favorite = clone(remote.favorite || {}, {});
+    var localFavorite = local.favorite || {};
+    var cards = Object.create(null);
+    [favorite.card, localFavorite.card].forEach(function (list) {
+      if (!Array.isArray(list)) return;
+      list.forEach(function (card) {
+        if (card && card.id !== null && typeof card.id !== 'undefined') cards[String(card.id)] = card;
+      });
+    });
+    CATEGORIES.forEach(function (category) {
+      var ids = [];
+      var seen = Object.create(null);
+      [localFavorite[category], favorite[category]].forEach(function (list) {
+        if (!Array.isArray(list)) return;
+        list.forEach(function (id) {
+          var key = String(id);
+          if (!seen[key] && cards[key]) { seen[key] = true; ids.push(id); }
+        });
+      });
+      favorite[category] = ids;
+    });
+    favorite.card = Object.keys(cards).map(function (id) { return cards[id]; });
+    return { favorite: favorite, timecodes: mergeTimecodes(remote.timecodes, local.timecodes) };
+  }
+  function scheduleSync(delay) {
+    if (!session || !online || !enabled()) return;
+    clearTimeout(syncTimer);
+    syncTimer = setTimeout(syncNow, delay || 0);
+  }
+  function syncNow() {
+    syncTimer = 0;
+    if (!session || !online || !enabled() || syncInFlight) return;
+    var accountId = session.user.id;
+    var before = readJson(BASE_PREFIX + accountId, null);
+    if (!before) return initializeAccount();
+    var start = localState();
+    var patch = changesBetween(before.favorite, start.favorite);
+    if (!patch) { notify(t('noCard')); return scheduleSync(30000); }
+    patch.timecodes = timecodeChanges(before.timecodes, start.timecodes);
+    syncInFlight = true;
+    refreshStatus();
+    request('POST', 'sync', patch, function (error, data) {
+      syncInFlight = false;
+      refreshStatus();
+      if (!session || session.user.id !== accountId) return;
+      if (error) {
+        if (onUnauthorized(error)) return;
+        if (!syncErrorShown) notify(t(error.status === 400 ? 'syncRejected' : 'syncError'));
+        syncErrorShown = true;
+        scheduleSync(retryDelay);
+        retryDelay = Math.min(retryDelay * 2, 60000);
+        return;
+      }
+      if (!enabled()) return;
+      retryDelay = 2000;
+      syncErrorShown = false;
+      var current = localState();
+      var recent = changesBetween(start.favorite, current.favorite);
+      if (!recent) { notify(t('noCard')); return scheduleSync(30000); }
+      var codes = timecodeChanges(start.timecodes, current.timecodes);
+      var remote = { favorite: data.favorite || {}, timecodes: data.timecodes || {} };
+      var merged = {
+        favorite: applyFavoritePatch(remote.favorite, recent),
+        timecodes: mergeTimecodes(remote.timecodes, codes)
+      };
+      if (!writeJson(BASE_PREFIX + accountId, remote)) return scheduleSync(30000);
+      applyState(merged);
+      writeJson(LOCAL_PREFIX + accountId, merged);
+      try { window.localStorage.setItem(LAST_PREFIX + accountId, String(Date.now())); } catch (storageError) {}
+      refreshStatus();
+      if (Object.keys(recent.categories).length || Object.keys(codes).length) scheduleSync(500);
+    });
+  }
+  function initializeAccount() {
+    if (!session || syncInFlight) return;
+    var accountId = session.user.id;
+    syncInFlight = true;
+    request('GET', 'state', null, function (error, data) {
+      syncInFlight = false;
+      if (!session || session.user.id !== accountId) return;
+      if (error) {
+        if (onUnauthorized(error)) return;
+        if (!syncErrorShown) notify(errorText(error));
+        syncErrorShown = true;
+        var delay = retryDelay;
+        retryDelay = Math.min(retryDelay * 2, 60000);
+        return setTimeout(initializeAccount, delay);
+      }
+      retryDelay = 2000;
+      syncErrorShown = false;
+      online = true;
+      var remote = { favorite: data.favorite || {}, timecodes: data.timecodes || {} };
+      var active = readLocal(ACTIVE_KEY);
+      if (active !== accountId) {
+        var local = localState();
+        if (!active) writeJson(GUEST_KEY, local);
+        var stored = readJson(LOCAL_PREFIX + accountId, null);
+        applyState(stored || mergeFirstSignIn(remote, local));
+        try { window.localStorage.setItem(ACTIVE_KEY, accountId); } catch (storageError) {}
+      }
+      if (!readJson(BASE_PREFIX + accountId, null)) writeJson(BASE_PREFIX + accountId, remote);
+      watchChanges();
+      refreshStatus();
+      scheduleSync(100);
+    });
+  }
+  function watchChanges() {
+    if (!watching && Lampa.Storage.listener && Lampa.Storage.listener.follow) {
+      watching = true;
+      Lampa.Storage.listener.follow('change', function (event) {
+        if (!session || importing || !event || !event.name) return;
+        if (event.name === 'favorite' || String(event.name).indexOf('file_view') === 0) {
+          saveCurrentAccountState();
+          scheduleSync(1000);
+        }
+      });
+    }
+    bindTimeline();
+  }
+  function bindTimeline() {
+    if (timelineBound) return;
+    if (Lampa.Timeline && Lampa.Timeline.listener && Lampa.Timeline.listener.follow) {
+      timelineBound = true;
+      Lampa.Timeline.listener.follow('update', function () {
+        if (!session || importing) return;
+        setTimeout(function () { saveCurrentAccountState(); scheduleSync(1000); }, 500);
+      });
+    } else setTimeout(bindTimeline, 500);
+  }
+  function checkSession() {
+    if (!session) return;
+    var token = session.token;
+    request('GET', 'me', null, function (error, data) {
+      if (!session || session.token !== token) return;
+      if (error) { onUnauthorized(error); return; }
+      online = true;
+      session.user = data.user;
+      refreshStatus();
+      if (enabled()) scheduleSync(250);
+    });
+  }
+  function removeLegacySync() {
+    if (!Lampa.Plugins || !Lampa.Plugins.get || !Lampa.Plugins.remove) return false;
+    var source = window.location.protocol === 'http:' || window.location.protocol === 'https:' ?
+      window.location.href : String(window.lampa_url || '');
+    var match = source.match(/^https?:\/\/[^/]+/i);
+    if (!match) return false;
+    var base = match[0];
+    var changed = false;
+    Lampa.Plugins.get().forEach(function (plugin) {
+      var url = typeof plugin === 'string' ? plugin : plugin && plugin.url;
+      if (!url) return;
+      var plain = String(url).split('?')[0];
+      if (plain !== base + '/sync.js' && plain.indexOf(base + '/sync/js/') !== 0) return;
+      Lampa.Plugins.remove(plugin);
+      changed = true;
+    });
+    if (changed && Lampa.Plugins.save) Lampa.Plugins.save();
+    return changed;
+  }
+  function closeCabinetFromBackdrop(event) {
+    var controller = Lampa.Controller && Lampa.Controller.enabled ? Lampa.Controller.enabled() : null;
+    var content = document.querySelector('.settings__content');
+    if (event.type === 'click' && Date.now() < ignoreBackdropClickUntil) {
+      event.preventDefault(); event.stopImmediatePropagation(); return;
+    }
+    if (!cabinetOpen || !document.body.classList.contains('settings--open')) return;
+    if (!controller || controller.name !== 'settings_component') return;
+    if (content && content.contains(event.target)) return;
+    ignoreBackdropClickUntil = Date.now() + 500;
+    event.preventDefault(); event.stopImmediatePropagation();
+    Lampa.Controller.back();
+  }
+  function enableBackdropClose() {
+    if (window.mylampaAccountBackdropCloseBound) return;
+    window.mylampaAccountBackdropCloseBound = true;
+    document.addEventListener(window.PointerEvent ? 'pointerup' : 'touchend', closeCabinetFromBackdrop, true);
+    document.addEventListener('click', closeCabinetFromBackdrop, true);
+    Lampa.Settings.listener.follow('open', function (event) { cabinetOpen = !!event && event.name === COMPONENT; });
+    Lampa.Settings.listener.follow('close', function () { cabinetOpen = false; });
+  }
   function addSettings() {
     if (window.mylampaAccountSettingsAdded) return;
     window.mylampaAccountSettingsAdded = true;
-
     Lampa.SettingsApi.addComponent({
-      component: COMPONENT,
-      name: 'Кабінет користувача',
-      before: 'account',
+      component: COMPONENT, name: t('cabinet'), before: 'account',
       icon: '<svg width="32" height="32" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><circle cx="12" cy="8" r="3.3" stroke="currentColor" stroke-width="1.8"/><path d="M5.5 20c.7-4 3-5.9 6.5-5.9s5.8 1.9 6.5 5.9" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><rect x="2.2" y="2.2" width="19.6" height="19.6" rx="3.2" stroke="currentColor" stroke-width="1.5"/></svg>'
     });
-
-    Lampa.SettingsApi.addParam({
-      component: COMPONENT,
-      param: { name: 'mylampa_sync_last_status', type: 'static' },
-      field: {
-        name: 'Синхронізовано станом на<br><span class="mylampa-sync-last" style="display:inline-block;margin-top:.28em;color:#71dfff">' + lastSyncText() + '</span>'
-      },
-      onRender: showLastSync
+    Lampa.SettingsApi.addParam({ component: COMPONENT,
+      param: { name: 'mylampa_account_user', type: 'static' },
+      field: { name: t('account') + '<br><span class="mylampa-account-user" style="color:#71dfff"></span>' },
+      onRender: function (item) { refreshStatus(item); }
     });
-
-    Lampa.SettingsApi.addParam({
-      component: COMPONENT,
-      param: { name: 'mylampa_sync_id_display', type: 'static' },
-      field: {
-        name: 'Ваш ID для синхронізації<br><span style="display:inline-block;margin-top:.28em;font-family:monospace;letter-spacing:.08em;color:#71dfff">' + currentId() + '</span>',
-        description: 'Щоб синхронізувати дані між пристроями, введіть цей ID на іншому вашому пристрої.'
-      }
+    Lampa.SettingsApi.addParam({ component: COMPONENT,
+      param: { name: 'mylampa_account_register', type: 'button' },
+      field: { name: t('register'), description: t('registerHelp') },
+      onRender: refreshVisibility, onChange: createAccount
     });
-
-    Lampa.SettingsApi.addParam({
-      component: COMPONENT,
-      param: {
-        name: JOIN_KEY,
-        type: 'input',
-        values: '',
-        placeholder: 'Введіть ID з іншого пристрою',
-        default: ''
-      },
-      field: {
-        name: 'Підключити інший пристрій',
-        description: 'Введіть ID, показаний на вашому телевізорі або телефоні.'
-      },
-      onChange: applyJoinedId
+    Lampa.SettingsApi.addParam({ component: COMPONENT,
+      param: { name: 'mylampa_account_login', type: 'button' },
+      field: { name: t('login'), description: t('loginHelp') },
+      onRender: refreshVisibility, onChange: login
     });
-
-    Lampa.SettingsApi.addParam({
-      component: COMPONENT,
+    Lampa.SettingsApi.addParam({ component: COMPONENT,
       param: { name: ENABLED_KEY, type: 'trigger', default: true },
-      field: {
-        name: 'Синхронізація між пристроями',
-        description: 'Після повторного ввімкнення офлайн-зміни спочатку передаються на сервер, а потім завантажуються дані інших пристроїв.'
-      },
-      onChange: function () {
-        if (!syncEnabled() && !rememberOfflineBase()) {
-          Lampa.Storage.set(ENABLED_KEY, true);
-          reloadSilently();
-          return;
-        }
-        reloadSilently();
-      }
+      field: { name: t('sync'), description: t('syncHelp') },
+      onRender: refreshVisibility,
+      onChange: function () { if (enabled()) scheduleSync(100); refreshStatus(); }
     });
-
-    Lampa.SettingsApi.addParam({
-      component: COMPONENT,
-      param: { name: 'mylampa_sync_regenerate', type: 'button' },
-      field: {
-        name: 'Створити новий короткий ID',
-        description: 'Скидає поточний ID. Підключені пристрої потрібно буде підключити знову.'
-      },
-      onChange: confirmRegenerateId
+    Lampa.SettingsApi.addParam({ component: COMPONENT,
+      param: { name: 'mylampa_account_last', type: 'static' },
+      field: { name: t('last') + '<br><span class="mylampa-account-last" style="color:#71dfff"></span>' },
+      onRender: refreshStatus
+    });
+    Lampa.SettingsApi.addParam({ component: COMPONENT,
+      param: { name: 'mylampa_account_logout', type: 'button' },
+      field: { name: t('logout') }, onRender: refreshVisibility, onChange: logout
+    });
+    Lampa.SettingsApi.addParam({ component: COMPONENT,
+      param: { name: 'mylampa_account_logout_others', type: 'button' },
+      field: { name: t('logoutOthers'), description: t('logoutOthersHelp') },
+      onRender: refreshVisibility, onChange: logoutOthers
+    });
+    Lampa.SettingsApi.addParam({ component: COMPONENT,
+      param: { name: 'mylampa_account_delete', type: 'button' },
+      field: { name: t('deleteAccount'), description: t('deleteHelp') },
+      onRender: refreshVisibility, onChange: deleteAccount
     });
   }
-
   function start() {
-    if (!window.Lampa || !Lampa.SettingsApi || !Lampa.Utils || !Lampa.Storage || !Lampa.Settings || !Lampa.Settings.listener) return false;
-
-    if (removeLegacyFlatSync()) {
-      Lampa.Noty.show('Оновлюємо синхронізацію MyLampa…');
-      setTimeout(function () { window.location.reload(); }, 700);
-      return true;
-    }
-
-    rememberOfflineTimecodes();
-    if (syncEnabled()) {
-      watchSyncTimecodes();
-      reconcileBeforeLoad();
-    }
+    if (!window.Lampa || !Lampa.SettingsApi || !Lampa.Storage || !Lampa.Settings || !Lampa.Settings.listener || !Lampa.Input) return false;
+    if (removeLegacySync()) { setTimeout(function () { window.location.reload(); }, 500); return true; }
+    var notice = readJson(NOTICE_KEY, '');
+    if (notice) { removeLocal(NOTICE_KEY); setTimeout(function () { notify(t(notice)); }, 700); }
+    session = readJson(SESSION_KEY, null);
     addSettings();
     enableBackdropClose();
+    if (session && session.token && session.user && session.user.id && session.user.username) {
+      initializeAccount();
+      statusTimer = setInterval(checkSession, 15000);
+      setInterval(function () { if (enabled()) scheduleSync(100); }, 20000);
+    } else session = null;
+    refreshStatus();
     return true;
   }
-
-  var wait = setInterval(function () {
-    if (start()) clearInterval(wait);
-  }, 100);
+  var wait = setInterval(function () { if (start()) clearInterval(wait); }, 100);
 }());
