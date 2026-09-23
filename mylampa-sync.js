@@ -10,10 +10,15 @@
   var cabinetOpen = false;
   var ignoreBackdropClickUntil = 0;
   var timelineRefreshTimer = 0;
+  var activeSyncId = '';
+  var syncLoadInFlight = false;
+  var syncRetryTimer = 0;
+  var syncRetryDelay = 2000;
+  var syncLoadErrorShown = false;
 
   function normalizeId(value) {
-    value = String(value || '').toLowerCase().replace(/[^a-z0-9-]/g, '');
-    return value.length >= 6 && value.length <= 32 ? value : '';
+    value = String(value || '').trim().toLowerCase();
+    return /^[a-z0-9-]{6}$/.test(value) ? value : '';
   }
 
   function makeId() {
@@ -22,9 +27,14 @@
     var i;
 
     if (window.crypto && window.crypto.getRandomValues) {
-      var bytes = new Uint8Array(6);
-      window.crypto.getRandomValues(bytes);
-      for (i = 0; i < bytes.length; i++) values += alphabet.charAt(bytes[i] & 31);
+      var bytes = new Uint8Array(1);
+      var limit = 256 - (256 % alphabet.length);
+      for (i = 0; i < 6; i++) {
+        do {
+          window.crypto.getRandomValues(bytes);
+        } while (bytes[0] >= limit);
+        values += alphabet.charAt(bytes[0] % alphabet.length);
+      }
     } else {
       for (i = 0; i < 6; i++) values += alphabet.charAt(Math.floor(Math.random() * alphabet.length));
     }
@@ -44,7 +54,14 @@
   }
 
   function serverUrl() {
-    return window.location.protocol + '//' + window.location.host;
+    if (window.location.protocol === 'http:' || window.location.protocol === 'https:') {
+      return window.location.protocol + '//' + window.location.host;
+    }
+
+    // Android may run the page from file:// while loading Lampa from lampa_url.
+    var remote = String(window.lampa_url || '');
+    var match = remote.match(/^https?:\/\/[^/]+/i);
+    return match ? match[0] : '';
   }
 
   function syncEnabled() {
@@ -69,11 +86,12 @@
     }
   }
 
-  function showLastSync() {
-    $('.mylampa-sync-last').text(lastSyncText());
+  function showLastSync(item) {
+    (item && item.find ? item.find('.mylampa-sync-last') : $('.mylampa-sync-last')).text(lastSyncText());
   }
 
   function markSynced() {
+    if (!syncEnabled() || !activeSyncId || currentId() !== activeSyncId) return;
     Lampa.Storage.set(LAST_SYNC_KEY, Date.now(), true);
     showLastSync();
   }
@@ -141,7 +159,7 @@
 
       // The server Sync plugin imports file_view with nolisten=true.  Lampa's
       // Timeline has already read its in-memory copy by then, so refresh it.
-      if (nolisten && (name === 'file_view' || String(name).indexOf('file_view_') === 0)) {
+      if (syncEnabled() && activeSyncId === currentId() && nolisten && (name === 'file_view' || String(name).indexOf('file_view_') === 0)) {
         refreshTimelineAfterSyncImport();
       }
 
@@ -162,15 +180,16 @@
 
   function removeLegacyFlatSync() {
     if (!Lampa.Plugins || typeof Lampa.Plugins.get !== 'function' || typeof Lampa.Plugins.remove !== 'function') return false;
+    if (!serverUrl()) return false;
 
     var flatUrl = serverUrl() + '/sync.js';
     var removed = false;
 
     Lampa.Plugins.get().forEach(function (plugin) {
-      if (!plugin || !plugin.url) return;
-      if (String(plugin.url).split('?')[0] !== flatUrl) return;
+      var url = typeof plugin === 'string' ? plugin : plugin && plugin.url;
+      if (!url || String(url).split('?')[0] !== flatUrl) return;
 
-      Lampa.Plugins.remove(plugin.url);
+      Lampa.Plugins.remove(plugin);
       removed = true;
     });
 
@@ -180,11 +199,39 @@
 
   function loadSync() {
     var id = currentId();
+    var base = serverUrl();
 
-    if (window[LOADED_KEY] === id) return;
+    if (window[LOADED_KEY] === id || syncLoadInFlight) return;
+    if (!base) {
+      if (!syncLoadErrorShown) Lampa.Noty.show('Не вдалося визначити сервер синхронізації.');
+      syncLoadErrorShown = true;
+      return;
+    }
 
-    window[LOADED_KEY] = id;
-    Lampa.Utils.putScriptAsync([serverUrl() + '/sync/js/' + encodeURIComponent(id)], function () {});
+    activeSyncId = id;
+    syncLoadInFlight = true;
+    Lampa.Utils.putScriptAsync([base + '/sync/js/' + encodeURIComponent(id)], null, function () {
+      syncLoadInFlight = false;
+      if (!syncEnabled() || currentId() !== id) return;
+
+      if (!syncLoadErrorShown) Lampa.Noty.show('Не вдалося завантажити синхронізацію. Повторюємо спробу…');
+      syncLoadErrorShown = true;
+      clearTimeout(syncRetryTimer);
+      syncRetryTimer = setTimeout(function () {
+        syncRetryTimer = 0;
+        loadSync();
+      }, syncRetryDelay);
+      syncRetryDelay = Math.min(syncRetryDelay * 2, 60000);
+    }, function () {
+      syncLoadInFlight = false;
+      if (!syncEnabled() || currentId() !== id) return;
+
+      window[LOADED_KEY] = id;
+      syncRetryDelay = 2000;
+      syncLoadErrorShown = false;
+      clearTimeout(syncRetryTimer);
+      syncRetryTimer = 0;
+    });
   }
 
   function applyJoinedId() {
@@ -192,10 +239,19 @@
 
     // The input can be opened and closed without entering anything.  In that
     // case leave the cabinet untouched instead of showing a distracting toast.
-    if (!id) return;
+    if (!id) {
+      if (String(Lampa.Storage.get(JOIN_KEY, '')).trim()) Lampa.Noty.show('ID має містити рівно 6 символів: літери, цифри або дефіс.');
+      return;
+    }
+
+    if (id === currentId()) {
+      Lampa.Storage.set(JOIN_KEY, '');
+      return;
+    }
 
     Lampa.Storage.set(ID_KEY, id);
     Lampa.Storage.set(JOIN_KEY, '');
+    Lampa.Storage.set(LAST_SYNC_KEY, 0, true);
     Lampa.Storage.set(ENABLED_KEY, true);
     reloadSilently();
   }
@@ -203,6 +259,7 @@
   function regenerateId() {
     Lampa.Storage.set(ID_KEY, makeId());
     Lampa.Storage.set(JOIN_KEY, '');
+    Lampa.Storage.set(LAST_SYNC_KEY, 0, true);
     Lampa.Storage.set(ENABLED_KEY, true);
     reloadSilently();
   }
@@ -296,7 +353,7 @@
   }
 
   function start() {
-    if (!window.Lampa || !Lampa.SettingsApi || !Lampa.Utils) return false;
+    if (!window.Lampa || !Lampa.SettingsApi || !Lampa.Utils || !Lampa.Storage || !Lampa.Settings || !Lampa.Settings.listener) return false;
 
     if (removeLegacyFlatSync()) {
       Lampa.Noty.show('Оновлюємо синхронізацію MyLampa…');
@@ -304,8 +361,10 @@
       return true;
     }
 
-    watchSyncTimecodes();
-    if (syncEnabled()) loadSync();
+    if (syncEnabled()) {
+      watchSyncTimecodes();
+      loadSync();
+    }
     addSettings();
     enableBackdropClose();
     return true;
