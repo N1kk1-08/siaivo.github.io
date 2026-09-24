@@ -62,6 +62,7 @@
       noCard: 'У локальних закладках бракує даних фільму. Синхронізацію відкладено.',
       othersLoggedOut: 'Інші пристрої вийшли з акаунта',
       accountDeleted: 'Акаунт видалено. Дані збережено',
+      orderRestored: 'Порядок історії та закладок відновлено',
       accountCreated: 'Акаунт створено', accountEntered: 'Вхід виконано'
     },
     ru: {
@@ -95,6 +96,7 @@
       noCard: 'В локальных закладках не хватает данных фильма. Синхронизация отложена.',
       othersLoggedOut: 'Другие устройства вышли из аккаунта',
       accountDeleted: 'Аккаунт удалён. Данные сохранены',
+      orderRestored: 'Порядок истории и закладок восстановлен',
       accountCreated: 'Аккаунт создан', accountEntered: 'Вход выполнен'
     },
     en: {
@@ -128,6 +130,7 @@
       noCard: 'A local bookmark is missing its movie details. Sync is postponed.',
       othersLoggedOut: 'Other devices signed out',
       accountDeleted: 'Account deleted. Data kept',
+      orderRestored: 'History and bookmark order restored',
       accountCreated: 'Account created', accountEntered: 'Signed in'
     }
   };
@@ -238,21 +241,41 @@
       if (originalPresent.length < 3) return;
       var originalIds = idSet(originalPresent);
       var currentPresent = current.filter(function (id) { return originalIds[String(id)]; });
-      if (currentPresent.length !== originalPresent.length ||
-          !currentPresent.every(function (id, index) {
-            return String(id) === String(originalPresent[originalPresent.length - 1 - index]);
-          }) || currentPresent.every(function (id, index) {
-            return String(id) === String(originalPresent[index]);
-          })) return;
+      if (currentPresent.length !== originalPresent.length) return;
+      var restoredOrder = null;
+      var maxRecent = Math.min(20, Math.max(1, Math.floor(originalPresent.length / 4)));
+      var minReversed = Math.max(3, Math.ceil(originalPresent.length * 3 / 4));
+      for (var count = 0; count <= maxRecent; count++) {
+        var recent = currentPresent.slice(0, count);
+        var recentIds = idSet(recent);
+        var tail = currentPresent.slice(count);
+        if (tail.length < minReversed) break;
+        var remaining = originalPresent.filter(function (id) { return !recentIds[String(id)]; });
+        if (tail.every(function (id, index) {
+          return String(id) === String(remaining[remaining.length - 1 - index]);
+        })) {
+          restoredOrder = recent.concat(remaining);
+          break;
+        }
+      }
+      if (!restoredOrder || currentPresent.every(function (id, index) {
+        return String(id) === String(restoredOrder[index]);
+      })) return;
       backup[category] = current.slice();
       var position = 0;
       repaired[category] = current.map(function (id) {
-        return originalIds[String(id)] ? originalPresent[position++] : id;
+        return originalIds[String(id)] ? restoredOrder[position++] : id;
       });
     });
-    if (!Object.keys(backup).length || !writeJson(ORDER_REPAIR_BACKUP_KEY, backup)) return;
+    if (!Object.keys(backup).length) return;
+    var savedBackup = readJson(ORDER_REPAIR_BACKUP_KEY, {});
+    Object.keys(backup).forEach(function (category) {
+      if (!savedBackup[category]) savedBackup[category] = backup[category];
+    });
+    if (!writeJson(ORDER_REPAIR_BACKUP_KEY, savedBackup)) return;
     Lampa.Storage.set('favorite', repaired, true);
     if (Lampa.Favorite && Lampa.Favorite.init) Lampa.Favorite.init();
+    notify(t('orderRestored'));
   }
   function accountKey(prefix) { return prefix + (session && session.user ? session.user.id : ''); }
   function dateText(timestamp) {
