@@ -6,6 +6,7 @@
   var OWNER_PREFIX = 'mylampa_account_owner_';
   var ACTIVE_KEY = 'mylampa_account_active_v1';
   var GUEST_KEY = 'mylampa_account_guest_v1';
+  var ORDER_REPAIR_BACKUP_KEY = 'mylampa_account_order_repair_backup_v1';
   var BASE_PREFIX = 'mylampa_account_base_';
   var LOCAL_PREFIX = 'mylampa_account_local_';
   var LAST_PREFIX = 'mylampa_account_last_';
@@ -221,6 +222,38 @@
       if (Lampa.Timeline && Lampa.Timeline.read) Lampa.Timeline.read();
     } finally { importing = false; }
   }
+  function repairReversedGuestOrder() {
+    var guest = readJson(GUEST_KEY, null);
+    if (!guest || !guest.favorite) return;
+    var favorite = Lampa.Storage.get('favorite', {});
+    if (!favorite || typeof favorite !== 'object') return;
+    var repaired = clone(favorite, {});
+    var backup = {};
+    CATEGORIES.forEach(function (category) {
+      var current = favorite[category];
+      var original = guest.favorite[category];
+      if (!Array.isArray(current) || !Array.isArray(original) || original.length < 3) return;
+      var currentIds = idSet(current);
+      var originalPresent = original.filter(function (id) { return currentIds[String(id)]; });
+      if (originalPresent.length < 3) return;
+      var originalIds = idSet(originalPresent);
+      var currentPresent = current.filter(function (id) { return originalIds[String(id)]; });
+      if (currentPresent.length !== originalPresent.length ||
+          !currentPresent.every(function (id, index) {
+            return String(id) === String(originalPresent[originalPresent.length - 1 - index]);
+          }) || currentPresent.every(function (id, index) {
+            return String(id) === String(originalPresent[index]);
+          })) return;
+      backup[category] = current.slice();
+      var position = 0;
+      repaired[category] = current.map(function (id) {
+        return originalIds[String(id)] ? originalPresent[position++] : id;
+      });
+    });
+    if (!Object.keys(backup).length || !writeJson(ORDER_REPAIR_BACKUP_KEY, backup)) return;
+    Lampa.Storage.set('favorite', repaired, true);
+    if (Lampa.Favorite && Lampa.Favorite.init) Lampa.Favorite.init();
+  }
   function accountKey(prefix) { return prefix + (session && session.user ? session.user.id : ''); }
   function dateText(timestamp) {
     if (!timestamp) return t('never');
@@ -341,7 +374,12 @@
         { name: t('confirm'), onSelect: function () {
           Lampa.Modal.close();
           edit(t('password'), true, function (password) {
-            request('POST', 'delete', { password: password }, function (error, data) {
+            var baseline = readJson(accountKey(BASE_PREFIX), null);
+            var current = localState();
+            var pending = changesBetween(baseline && baseline.favorite, current.favorite);
+            if (!pending) return notify(t('noCard'));
+            pending.timecodes = timecodeChanges(baseline && baseline.timecodes, current.timecodes);
+            request('POST', 'delete', { password: password, changes: pending }, function (error, data) {
               if (error) return notify(errorText(error));
               var name = session.user.username;
               if (data && data.archiveId) writeJson(ARCHIVE_PREFIX + session.user.id, data.archiveId);
@@ -407,11 +445,12 @@
       var remove = idSet(change.remove);
       var list = (Array.isArray(value[category]) ? value[category] : []).filter(function (id) { return !remove[String(id)]; });
       var have = idSet(list);
+      var additions = [];
       change.add.forEach(function (id) {
-        if (!have[String(id)]) { list.unshift(id); have[String(id)] = true; }
+        if (!have[String(id)]) { additions.push(id); have[String(id)] = true; }
         if (patch.cards[String(id)]) cards[String(id)] = patch.cards[String(id)];
       });
-      value[category] = list;
+      value[category] = additions.concat(list);
     });
     value.card = Object.keys(cards).map(function (id) { return cards[id]; });
     return value;
@@ -723,7 +762,10 @@
     if (session && session.token && session.user && session.user.id && session.user.username) {
       initializeAccount();
       statusTimer = setInterval(checkSession, 15000);
-    } else session = null;
+    } else {
+      session = null;
+      repairReversedGuestOrder();
+    }
     refreshStatus();
     return true;
   }
