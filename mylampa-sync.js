@@ -6,7 +6,6 @@
   var OWNER_PREFIX = 'mylampa_account_owner_';
   var ACTIVE_KEY = 'mylampa_account_active_v1';
   var GUEST_KEY = 'mylampa_account_guest_v1';
-  var ORDER_REPAIR_BACKUP_KEY = 'mylampa_account_order_repair_backup_v1';
   var BASE_PREFIX = 'mylampa_account_base_';
   var LOCAL_PREFIX = 'mylampa_account_local_';
   var LAST_PREFIX = 'mylampa_account_last_';
@@ -62,7 +61,6 @@
       noCard: 'У локальних закладках бракує даних фільму. Синхронізацію відкладено.',
       othersLoggedOut: 'Інші пристрої вийшли з акаунта',
       accountDeleted: 'Акаунт видалено. Дані збережено',
-      orderRestored: 'Порядок історії та закладок відновлено',
       accountCreated: 'Акаунт створено', accountEntered: 'Вхід виконано'
     },
     ru: {
@@ -96,7 +94,6 @@
       noCard: 'В локальных закладках не хватает данных фильма. Синхронизация отложена.',
       othersLoggedOut: 'Другие устройства вышли из аккаунта',
       accountDeleted: 'Аккаунт удалён. Данные сохранены',
-      orderRestored: 'Порядок истории и закладок восстановлен',
       accountCreated: 'Аккаунт создан', accountEntered: 'Вход выполнен'
     },
     en: {
@@ -130,7 +127,6 @@
       noCard: 'A local bookmark is missing its movie details. Sync is postponed.',
       othersLoggedOut: 'Other devices signed out',
       accountDeleted: 'Account deleted. Data kept',
-      orderRestored: 'History and bookmark order restored',
       accountCreated: 'Account created', accountEntered: 'Signed in'
     }
   };
@@ -224,58 +220,6 @@
       if (Lampa.Favorite && Lampa.Favorite.init) Lampa.Favorite.init();
       if (Lampa.Timeline && Lampa.Timeline.read) Lampa.Timeline.read();
     } finally { importing = false; }
-  }
-  function repairReversedGuestOrder() {
-    var guest = readJson(GUEST_KEY, null);
-    if (!guest || !guest.favorite) return;
-    var favorite = Lampa.Storage.get('favorite', {});
-    if (!favorite || typeof favorite !== 'object') return;
-    var repaired = clone(favorite, {});
-    var backup = {};
-    CATEGORIES.forEach(function (category) {
-      var current = favorite[category];
-      var original = guest.favorite[category];
-      if (!Array.isArray(current) || !Array.isArray(original) || original.length < 3) return;
-      var currentIds = idSet(current);
-      var originalPresent = original.filter(function (id) { return currentIds[String(id)]; });
-      if (originalPresent.length < 3) return;
-      var originalIds = idSet(originalPresent);
-      var currentPresent = current.filter(function (id) { return originalIds[String(id)]; });
-      if (currentPresent.length !== originalPresent.length) return;
-      var restoredOrder = null;
-      var maxRecent = Math.min(20, Math.max(1, Math.floor(originalPresent.length / 4)));
-      var minReversed = Math.max(3, Math.ceil(originalPresent.length * 3 / 4));
-      for (var count = 0; count <= maxRecent; count++) {
-        var recent = currentPresent.slice(0, count);
-        var recentIds = idSet(recent);
-        var tail = currentPresent.slice(count);
-        if (tail.length < minReversed) break;
-        var remaining = originalPresent.filter(function (id) { return !recentIds[String(id)]; });
-        if (tail.every(function (id, index) {
-          return String(id) === String(remaining[remaining.length - 1 - index]);
-        })) {
-          restoredOrder = recent.concat(remaining);
-          break;
-        }
-      }
-      if (!restoredOrder || currentPresent.every(function (id, index) {
-        return String(id) === String(restoredOrder[index]);
-      })) return;
-      backup[category] = current.slice();
-      var position = 0;
-      repaired[category] = current.map(function (id) {
-        return originalIds[String(id)] ? restoredOrder[position++] : id;
-      });
-    });
-    if (!Object.keys(backup).length) return;
-    var savedBackup = readJson(ORDER_REPAIR_BACKUP_KEY, {});
-    Object.keys(backup).forEach(function (category) {
-      if (!savedBackup[category]) savedBackup[category] = backup[category];
-    });
-    if (!writeJson(ORDER_REPAIR_BACKUP_KEY, savedBackup)) return;
-    Lampa.Storage.set('favorite', repaired, true);
-    if (Lampa.Favorite && Lampa.Favorite.init) Lampa.Favorite.init();
-    notify(t('orderRestored'));
   }
   function accountKey(prefix) { return prefix + (session && session.user ? session.user.id : ''); }
   function dateText(timestamp) {
@@ -785,10 +729,7 @@
     if (session && session.token && session.user && session.user.id && session.user.username) {
       initializeAccount();
       statusTimer = setInterval(checkSession, 15000);
-    } else {
-      session = null;
-      repairReversedGuestOrder();
-    }
+    } else session = null;
     refreshStatus();
     return true;
   }
