@@ -679,8 +679,11 @@
     });
     Lampa.SettingsApi.addParam({ component: COMPONENT,
       param: { name: 'mylampa_account_user', type: 'static' },
-      field: { name: t('account') + '<br><span class="mylampa-account-user" style="color:#71dfff"></span>' },
-      onRender: function (item) { refreshStatus(item); }
+      field: { name: t('account') },
+      onRender: function (item) {
+        item.append('<div class="settings-param__value mylampa-account-user" style="color:#71dfff;line-height:1.4;word-wrap:break-word"></div>');
+        refreshStatus(item);
+      }
     });
     Lampa.SettingsApi.addParam({ component: COMPONENT,
       param: { name: 'mylampa_account_register', type: 'button' },
@@ -700,8 +703,11 @@
     });
     Lampa.SettingsApi.addParam({ component: COMPONENT,
       param: { name: 'mylampa_account_last', type: 'static' },
-      field: { name: t('last') + '<br><span class="mylampa-account-last" style="color:#71dfff"></span>' },
-      onRender: refreshStatus
+      field: { name: t('last') },
+      onRender: function (item) {
+        item.append('<div class="settings-param__value mylampa-account-last" style="color:#71dfff;line-height:1.4;word-wrap:break-word"></div>');
+        refreshStatus(item);
+      }
     });
     Lampa.SettingsApi.addParam({ component: COMPONENT,
       param: { name: 'mylampa_account_logout', type: 'button' },
