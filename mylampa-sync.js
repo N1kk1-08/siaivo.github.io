@@ -376,12 +376,23 @@
     });
     var missingCard = false;
     CATEGORIES.forEach(function (category) {
-      var oldList = before && before[category] || [];
-      var newList = after && after[category] || [];
-      var oldSet = idSet(oldList);
+      var oldList = before && Array.isArray(before[category]) ? before[category] : [];
+      var newList = after && Array.isArray(after[category]) ? after[category] : [];
       var newSet = idSet(newList);
-      var added = (Array.isArray(newList) ? newList : []).filter(function (id) { return !oldSet[String(id)]; });
-      var removed = (Array.isArray(oldList) ? oldList : []).filter(function (id) { return !newSet[String(id)]; });
+      // Lampa prepends new cards and repeat views. Keep the longest suffix
+      // with the old relative order; reinsert only the changed prefix.
+      var frontLength = newList.length;
+      var oldIndex = oldList.length - 1;
+      while (frontLength > 0) {
+        var id = String(newList[frontLength - 1]);
+        while (oldIndex >= 0 && String(oldList[oldIndex]) !== id) oldIndex--;
+        if (oldIndex < 0) break;
+        frontLength--;
+        oldIndex--;
+      }
+      var added = newList.slice(0, frontLength);
+      var reinserted = idSet(added);
+      var removed = oldList.filter(function (id) { return !newSet[String(id)] || reinserted[String(id)]; });
       added.forEach(function (id) {
         var card = localCards[String(id)];
         if (!card) missingCard = true;
@@ -448,7 +459,13 @@
     CATEGORIES.forEach(function (category) {
       var ids = [];
       var seen = Object.create(null);
-      [localFavorite[category], favorite[category]].forEach(function (list) {
+      // On first sign-in there is no baseline for shared cards. Preserve
+      // their server order and prepend only cards that are new to the account.
+      var remoteList = Array.isArray(favorite[category]) ? favorite[category] : [];
+      var remoteIds = idSet(remoteList);
+      var localList = Array.isArray(localFavorite[category]) ? localFavorite[category] : [];
+      var localOnly = localList.filter(function (id) { return !remoteIds[String(id)]; });
+      [localOnly, remoteList].forEach(function (list) {
         if (!Array.isArray(list)) return;
         list.forEach(function (id) {
           var key = String(id);
