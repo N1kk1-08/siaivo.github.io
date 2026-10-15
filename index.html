@@ -73,16 +73,21 @@
 
                 var sreateScript = function(){
                     var script = document.createElement('script')
+                    var finished = false
 
                     script.type = 'text/javascript'
 
                     script.onload = script.onreadystatechange = function(e) {
+                        if (finished || (script.readyState && script.readyState !== 'loaded' && script.readyState !== 'complete')) return
+                        finished = true
                         console.log('Loader', 'Script loaded', e)
 
                         if (!!onload) onload()
                     };
 
                     script.onerror = function(){
+                        if (finished) return
+                        finished = true
                         trys++
 
                         console.log('Loader', 'error-load-script', src)
@@ -121,59 +126,88 @@
             })
         }
 
+        // MYLAMPA_BOOTSTRAP_V1: a direct fork update must also initialize Lampac.
+        // LampaCron used to append this dependency only when it updated the fork.
+        function loadLampacInitialization(done) {
+            var match = String(lampa_url || location.href).match(/^(https?:\/\/[^/]+)/i)
+            if (!match) return done()
+            var origin = match[1]
+            var finished = false
+            function ready() {
+                if (finished) return
+                finished = true
+                done()
+            }
+            function findScript(path) {
+                var scripts = document.getElementsByTagName('script')
+                for (var i = 0; i < scripts.length; i++) {
+                    if (String(scripts[i].src).split('?')[0] === origin + path) return scripts[i]
+                }
+            }
+            function initialized() {
+                var client = findScript('/mylampa-access/client.js')
+                if (window.mylampaAccessInstalled || !client) return ready()
+                // The optional admin loader adds an async script. Do not start
+                // native transports before its account hooks have been bound.
+                var timeout = setTimeout(ready, 12000)
+                function settled() { clearTimeout(timeout); ready() }
+                client.addEventListener('load', settled)
+                client.addEventListener('error', settled)
+            }
+            if (findScript('/lampainit.js')) initialized()
+            else putScript(origin + '/lampainit.js?v=' + cache_version, initialized, ready)
+        }
+
         function loadLocalLampa(){
             if(lampa_url !== '') window.local_lampa = true
 
             loadCurrentLampa()
         }
 
-        if (typeof AndroidJS !== "undefined"
-            && !!AndroidJS.getLampaURL
-            && /^https?:\/\//i.test(AndroidJS.getLampaURL())
-            && !/^https?:\/\//i.test(location.href)
-        ) {
-            lampa_url = urlJoin(AndroidJS.getLampaURL(),'')
-        }
+        function startMyLampa() {
+            if (typeof AndroidJS !== "undefined"
+                && !!AndroidJS.getLampaURL
+                && /^https?:\/\//i.test(AndroidJS.getLampaURL())
+                && !/^https?:\/\//i.test(location.href)
+            ) {
+                lampa_url = urlJoin(AndroidJS.getLampaURL(),'')
+            }
 
-        if (lampa_url !== '') {
-            putScript(
-                urlJoin(lampa_url, 'lampainit.js?v=' + cache_version),
-                false,
-                function(){}
-            )
-
-            putScript(
-                urlJoin(lampa_url, 'app.min.js?v=' + cache_version),
-                function () {
-                    var css = urlJoin(lampa_url, 'css/app.css?v=' + cache_version)
-
-                    $('head').append('<link rel="stylesheet" href="' + css + '">')
-                    loadMyLampaCustomizations()
-                },
-                function () {
+            loadLampacInitialization(function () {
+                if (lampa_url !== '') {
                     putScript(
-                        urlJoin(lampa_url, 'lampa-main/app.min.js?v=' + cache_version),
+                        urlJoin(lampa_url, 'app.min.js?v=' + cache_version),
                         function () {
-                            var css = urlJoin(lampa_url, 'lampa-main/css/app.css?v=' + cache_version)
+                            var css = urlJoin(lampa_url, 'css/app.css?v=' + cache_version)
 
                             $('head').append('<link rel="stylesheet" href="' + css + '">')
-
                             loadMyLampaCustomizations()
-
-                            putScript(
-                                urlJoin(lampa_url, 'lampainit.js?v=' + cache_version),
-                                false,
-                                function(){}
-                            )
                         },
-                        loadLocalLampa
+                        function () {
+                            putScript(
+                                urlJoin(lampa_url, 'lampa-main/app.min.js?v=' + cache_version),
+                                function () {
+                                    var css = urlJoin(lampa_url, 'lampa-main/css/app.css?v=' + cache_version)
+
+                                    $('head').append('<link rel="stylesheet" href="' + css + '">')
+
+                                    loadMyLampaCustomizations()
+
+                                },
+                                loadLocalLampa
+                            )
+                        }
                     )
                 }
-            )
+                else{
+                    loadCurrentLampa()
+                }
+            })
         }
-        else{
-            loadCurrentLampa()
-        }
+        // A normal Lampac update may already have appended /lampainit.js at
+        // the end of this document. Let that script run before checking it.
+        if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', startMyLampa)
+        else startMyLampa()
     </script>
 </body>
 </html>
