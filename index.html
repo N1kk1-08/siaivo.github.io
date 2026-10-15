@@ -121,7 +121,7 @@
         }
 
         function loadCurrentLampa() {
-            putScript('app.min.js?v=' + cache_version, function () {
+            putScript('app.min.js?v=episode-1-' + cache_version, function () {
                 loadMyLampaCustomizations()
             })
         }
@@ -176,7 +176,7 @@
             loadLampacInitialization(function () {
                 if (lampa_url !== '') {
                     putScript(
-                        urlJoin(lampa_url, 'app.min.js?v=' + cache_version),
+                        urlJoin(lampa_url, 'app.min.js?v=episode-1-' + cache_version),
                         function () {
                             var css = urlJoin(lampa_url, 'css/app.css?v=' + cache_version)
 
@@ -185,7 +185,7 @@
                         },
                         function () {
                             putScript(
-                                urlJoin(lampa_url, 'lampa-main/app.min.js?v=' + cache_version),
+                                urlJoin(lampa_url, 'lampa-main/app.min.js?v=episode-1-' + cache_version),
                                 function () {
                                     var css = urlJoin(lampa_url, 'lampa-main/css/app.css?v=' + cache_version)
 
